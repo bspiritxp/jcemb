@@ -1,0 +1,23 @@
+# Build outputs
+/jcemb
+*.exe
+*.test
+
+# Local vector database
+/.vectordb/
+**/.vectordb/
+
+# Coverage and test artifacts
+coverage.out
+*.coverprofile
+
+# Local editor and OS files
+.DS_Store
+.idea/
+.vscode/
+
+# Local planning/session metadata
+/.sisyphus/
+
+# Temporary files
+/tmp/
