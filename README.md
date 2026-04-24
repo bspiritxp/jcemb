@@ -199,6 +199,19 @@ INTEGRATION=1 go test -tags=integration ./...
 
 Integration tests require a running Ollama instance and the configured model.
 
+## Releases
+
+GitHub Actions builds release archives automatically when a version tag is
+pushed:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow publishes macOS, Linux, and Windows binaries for `amd64`
+and `arm64`, plus a `SHA256SUMS` file.
+
 ## Extending
 
 Providers, splitters, and vector stores are registered through package
