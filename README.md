@@ -1,5 +1,7 @@
 # jcemb
 
+[中文文档](README.zh-CN.md)
+
 `jcemb` is a local-first command line tool for embedding Markdown documents into
 a local vector store and searching them with semantic queries.
 
