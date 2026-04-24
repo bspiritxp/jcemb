@@ -1,6 +1,9 @@
 package config
 
-import "time"
+import (
+	"os"
+	"time"
+)
 
 type DefaultsConfig struct {
 	AppName        string
@@ -17,13 +20,18 @@ type OllamaDefaultsConfig struct {
 }
 
 func Defaults() DefaultsConfig {
+	ollamaURL := os.Getenv("OLLAMA_HOST")
+	if ollamaURL == "" {
+		ollamaURL = "http://localhost:11434"
+	}
+
 	return DefaultsConfig{
 		AppName:        "jcemb",
 		DefaultPath:    ".",
 		IntegrationTag: "integration",
 		IntegrationEnv: "INTEGRATION",
 		Ollama: OllamaDefaultsConfig{
-			URL:       "http://localhost:11434",
+			URL:       ollamaURL,
 			BatchSize: 8,
 			Timeout:   30 * time.Second,
 		},
