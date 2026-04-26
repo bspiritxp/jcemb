@@ -352,11 +352,16 @@ func (s *Service) searchScope(ctx context.Context, scope queryScope, request Req
 	}
 	defer store.Close()
 
+	pathPrefix := scope.PathPrefix
+	if pathPrefix != "" {
+		pathPrefix = filepath.Join(scope.RootDir, pathPrefix)
+	}
+
 	results, err := store.Search(ctx, domain.SearchQuery{
 		Vector:     queryVector,
 		Limit:      effectiveSearchWindow(request.Limit, request.SearchWindow),
 		Tags:       request.Tags,
-		PathPrefix: scope.PathPrefix,
+		PathPrefix: pathPrefix,
 	})
 	if err != nil {
 		if errors.Is(err, lancedb.ErrVectorDBNotFound) {

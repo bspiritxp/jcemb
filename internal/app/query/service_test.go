@@ -166,9 +166,11 @@ func TestServiceRunUsesLongestIndexedRootAndPreservesRelativePathPrefix(t *testi
 	dataRoot := t.TempDir()
 	config := testStoreConfig(nestedRoot, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt)
 	require.NoError(t, os.MkdirAll(filepath.Join(nestedRoot, "deeper"), 0o755))
+	guidePath := filepath.ToSlash(filepath.Join(nestedRoot, "deeper", "guide.md"))
+	outsidePath := filepath.ToSlash(filepath.Join(nestedRoot, "outside.md"))
 	require.NoError(t, os.WriteFile(filepath.Join(nestedRoot, "deeper", "guide.md"), []byte("# Guide\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(nestedRoot, "outside.md"), []byte("# Outside\n"), 0o644))
-	persistIndexedCollection(t, config, []domain.FileState{{RelPath: "deeper/guide.md", FileHash: "hash-guide", RecipeHash: "recipe", ChunkIDs: []string{"chunk-guide"}, ChunkCount: 1, LastIndexedAt: createdAt}, {RelPath: "outside.md", FileHash: "hash-outside", RecipeHash: "recipe", ChunkIDs: []string{"chunk-outside"}, ChunkCount: 1, LastIndexedAt: createdAt}})
+	persistIndexedCollection(t, config, []domain.FileState{{RelPath: guidePath, FileHash: "hash-guide", RecipeHash: "recipe", ChunkIDs: []string{"chunk-guide"}, ChunkCount: 1, LastIndexedAt: createdAt}, {RelPath: outsidePath, FileHash: "hash-outside", RecipeHash: "recipe", ChunkIDs: []string{"chunk-outside"}, ChunkCount: 1, LastIndexedAt: createdAt}})
 	registerCollectionAt(t, dataRoot, rootDir)
 	registerCollectionAt(t, dataRoot, nestedRoot)
 
@@ -176,8 +178,8 @@ func TestServiceRunUsesLongestIndexedRootAndPreservesRelativePathPrefix(t *testi
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, store.Close()) })
 	require.NoError(t, store.Upsert(context.Background(), []domain.VectorRecord{
-		newVectorRecord("chunk-guide", "deeper/guide.md", []string{"go"}, []float32{1, 0, 0}, 0),
-		newVectorRecord("chunk-outside", "outside.md", []string{"go"}, []float32{1, 0, 0}, 0),
+		newVectorRecord("chunk-guide", guidePath, []string{"go"}, []float32{1, 0, 0}, 0),
+		newVectorRecord("chunk-outside", outsidePath, []string{"go"}, []float32{1, 0, 0}, 0),
 	}))
 
 	service := NewService(Dependencies{
@@ -199,18 +201,18 @@ func TestServiceRunUsesLongestIndexedRootAndPreservesRelativePathPrefix(t *testi
 	require.Equal(t, nestedRoot, result.RootDir)
 	require.Equal(t, nestedRoot, result.PathRoot)
 	require.Len(t, result.Results, 2)
-	require.Equal(t, "deeper/guide.md", result.Results[0].Chunk.Metadata.RelPath)
-	require.Equal(t, "outside.md", result.Results[1].Chunk.Metadata.RelPath)
+	require.Equal(t, guidePath, result.Results[0].Chunk.Metadata.RelPath)
+	require.Equal(t, outsidePath, result.Results[1].Chunk.Metadata.RelPath)
 
 	dirResult, err := service.Run(context.Background(), Request{Text: "guide", Path: filepath.Join(nestedRoot, "deeper"), MMRLambda: 1.0})
 	require.NoError(t, err)
 	require.Len(t, dirResult.Results, 1)
-	require.Equal(t, "deeper/guide.md", dirResult.Results[0].Chunk.Metadata.RelPath)
+	require.Equal(t, guidePath, dirResult.Results[0].Chunk.Metadata.RelPath)
 
 	fileResult, err := service.Run(context.Background(), Request{Text: "guide", Path: filepath.Join(nestedRoot, "deeper", "guide.md"), MMRLambda: 1.0})
 	require.NoError(t, err)
 	require.Len(t, fileResult.Results, 1)
-	require.Equal(t, "deeper/guide.md", fileResult.Results[0].Chunk.Metadata.RelPath)
+	require.Equal(t, guidePath, fileResult.Results[0].Chunk.Metadata.RelPath)
 }
 
 func TestServiceRunSearchesAllCollectionsWhenPathOmitted(t *testing.T) {

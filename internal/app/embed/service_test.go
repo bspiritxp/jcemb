@@ -142,12 +142,12 @@ func TestServiceRunReconcilesDeletedFiles(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, Summary{Processed: 1, Skipped: 1, Deleted: 1}, result.Summary)
-	require.Equal(t, []string{"docs/b.md"}, result.Deleted)
+	require.Equal(t, []string{filepath.ToSlash(filepath.Join(rootDir, "docs", "b.md"))}, result.Deleted)
 
 	snapshot, loadErr := loadSnapshotForTest(rootDir, service.deps.ResolveAppPaths)
 	require.NoError(t, loadErr)
 	require.Len(t, snapshot.Files, 1)
-	require.Equal(t, "docs/a.md", snapshot.Files[0].RelPath)
+	require.Equal(t, filepath.ToSlash(filepath.Join(rootDir, "docs", "a.md")), snapshot.Files[0].RelPath)
 
 	store, openErr := lancedb.New(domain.StoreConfig{
 		RootDir:      rootDir,
@@ -166,7 +166,7 @@ func TestServiceRunReconcilesDeletedFiles(t *testing.T) {
 	results, searchErr := store.Search(context.Background(), domain.SearchQuery{Vector: []float32{1, 0, 0}, Limit: 10})
 	require.NoError(t, searchErr)
 	require.Len(t, results, 1)
-	require.Equal(t, "docs/a.md", results[0].Chunk.Metadata.RelPath)
+	require.Equal(t, filepath.ToSlash(filepath.Join(rootDir, "docs", "a.md")), results[0].Chunk.Metadata.RelPath)
 }
 
 func TestServiceRunReturnsNonZeroErrorWhenSingleFileFails(t *testing.T) {
@@ -176,7 +176,7 @@ func TestServiceRunReturnsNonZeroErrorWhenSingleFileFails(t *testing.T) {
 		"docs/good.md": "# Good\n\nGood body.",
 		"docs/bad.md":  "# Bad\n\nThis file should fail.",
 	})
-	provider := newFakeProvider(map[string]error{"docs/bad.md": errors.New("boom")})
+	provider := newFakeProvider(map[string]error{filepath.ToSlash(filepath.Join(rootDir, "docs", "bad.md")): errors.New("boom")})
 	service := newTestService(t, provider)
 
 	result, err := service.Run(context.Background(), Request{
@@ -193,13 +193,13 @@ func TestServiceRunReturnsNonZeroErrorWhenSingleFileFails(t *testing.T) {
 	require.Equal(t, 1, result.Summary.Errors)
 	require.Equal(t, 1, result.Summary.Updated)
 	require.Len(t, result.Failures, 1)
-	require.Equal(t, "docs/bad.md", result.Failures[0].RelPath)
+	require.Equal(t, filepath.ToSlash(filepath.Join(rootDir, "docs", "bad.md")), result.Failures[0].RelPath)
 	require.Contains(t, result.Failures[0].Err.Error(), "boom")
 
 	snapshot, loadErr := loadSnapshotForTest(rootDir, service.deps.ResolveAppPaths)
 	require.NoError(t, loadErr)
 	require.Len(t, snapshot.Files, 1)
-	require.Equal(t, "docs/good.md", snapshot.Files[0].RelPath)
+	require.Equal(t, filepath.ToSlash(filepath.Join(rootDir, "docs", "good.md")), snapshot.Files[0].RelPath)
 }
 
 func TestServiceRunUsesStorageMetadataAuthorityWhenCompatibilityManifestsAreRemoved(t *testing.T) {
@@ -240,7 +240,7 @@ func TestServiceRunUsesStorageMetadataAuthorityWhenCompatibilityManifestsAreRemo
 	snapshot, loadErr := loadSnapshotForTest(rootDir, service.deps.ResolveAppPaths)
 	require.NoError(t, loadErr)
 	require.Len(t, snapshot.Files, 1)
-	require.Equal(t, "guide.md", snapshot.Files[0].RelPath)
+	require.Equal(t, filepath.ToSlash(filepath.Join(rootDir, "guide.md")), snapshot.Files[0].RelPath)
 	require.False(t, snapshot.Files[0].ModTime.IsZero())
 }
 

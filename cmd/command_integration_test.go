@@ -74,7 +74,7 @@ func TestEmbedAndQueryCommandsEndToEndWithOfflineFixtureProvider(t *testing.T) {
 	require.Equal(t, testModelName, envelope.Model)
 	require.Equal(t, 3, envelope.VectorDim)
 	require.NotEmpty(t, envelope.Results)
-	require.Equal(t, "docs/plain.md", envelope.Results[0].RelPath)
+	require.Equal(t, filepath.ToSlash(filepath.Join(rootDir, "docs", "plain.md")), envelope.Results[0].RelPath)
 }
 
 func TestEmbedCommandSupportsIncrementalSkipAndForce(t *testing.T) {
@@ -110,13 +110,16 @@ func TestEmbedCommandSyncsDeletedAndRenamedFiles(t *testing.T) {
 
 	snapshot, err := index.Load(rootDir)
 	require.NoError(t, err)
-	require.Equal(t, []string{"docs/renamed-note.md", "docs/with-front-matter.md"}, collectRelPaths(snapshot.Files))
+	require.Equal(t, []string{
+		filepath.ToSlash(filepath.Join(rootDir, "docs", "renamed-note.md")),
+		filepath.ToSlash(filepath.Join(rootDir, "docs", "with-front-matter.md")),
+	}, collectRelPaths(snapshot.Files))
 
 	jsonOutput, _, err := executeRootCommand(t, []string{"query", "yaml", "--path", rootDir, "--json"})
 	require.NoError(t, err)
-	require.Contains(t, jsonOutput, "docs/renamed-note.md")
-	require.NotContains(t, jsonOutput, "docs/plain.md")
-	require.NotContains(t, jsonOutput, "docs/delete-me.md")
+	require.Contains(t, jsonOutput, filepath.ToSlash(filepath.Join(rootDir, "docs", "renamed-note.md")))
+	require.NotContains(t, jsonOutput, filepath.ToSlash(filepath.Join(rootDir, "docs", "plain.md")))
+	require.NotContains(t, jsonOutput, filepath.ToSlash(filepath.Join(rootDir, "docs", "delete-me.md")))
 }
 
 func TestEmbedCommandUsesPersistedConfigDefaultsAndCLIOverridesThem(t *testing.T) {
@@ -176,18 +179,18 @@ func TestEmbedCommandReturnsRunErrorForInvalidYAMLFixture(t *testing.T) {
 
 	snapshot, loadErr := index.Load(rootDir)
 	require.NoError(t, loadErr)
-	require.Equal(t, []string{"docs/good.md"}, collectRelPaths(snapshot.Files))
+	require.Equal(t, []string{filepath.ToSlash(filepath.Join(rootDir, "docs", "good.md"))}, collectRelPaths(snapshot.Files))
 
 	textOutput, _, queryErr := executeRootCommand(t, []string{"query", "good", "--path", rootDir})
 	require.NoError(t, queryErr)
-	require.Contains(t, textOutput, "docs/good.md")
+	require.Contains(t, textOutput, filepath.ToSlash(filepath.Join(rootDir, "docs", "good.md")))
 	store, storeErr := lancedb.New(snapshot.Config)
 	require.NoError(t, storeErr)
 	t.Cleanup(func() { require.NoError(t, store.Close()) })
 	results, searchErr := store.Search(context.Background(), domain.SearchQuery{Vector: []float32{1, 0, 0}, Limit: 10})
 	require.NoError(t, searchErr)
 	require.Len(t, results, 1)
-	require.Equal(t, "docs/good.md", results[0].Chunk.Metadata.RelPath)
+	require.Equal(t, filepath.ToSlash(filepath.Join(rootDir, "docs", "good.md")), results[0].Chunk.Metadata.RelPath)
 }
 
 func TestQueryCommandSupportsSubdirectoryAndFilePathScopes(t *testing.T) {
@@ -213,13 +216,13 @@ func TestQueryCommandSupportsSubdirectoryAndFilePathScopes(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal([]byte(globalOutput), &globalEnvelope))
 	require.Empty(t, globalEnvelope.RootPath)
-	require.Contains(t, collectJSONRelPaths(globalEnvelope.Results), "docs/global-only.md")
-	require.Contains(t, collectJSONRelPaths(globalEnvelope.Results), "docs/with-front-matter.md")
+	require.Contains(t, collectJSONRelPaths(globalEnvelope.Results), filepath.ToSlash(filepath.Join(secondRoot, "docs", "global-only.md")))
+	require.Contains(t, collectJSONRelPaths(globalEnvelope.Results), filepath.ToSlash(filepath.Join(secondRoot, "docs", "with-front-matter.md")))
 
 	subdirPath := filepath.Join(rootDir, "docs")
 	textOutput, _, err := executeRootCommand(t, []string{"query", "go vector", "--path", subdirPath})
 	require.NoError(t, err)
-	require.Contains(t, textOutput, "docs/with-front-matter.md")
+	require.Contains(t, textOutput, filepath.ToSlash(filepath.Join(rootDir, "docs", "with-front-matter.md")))
 	require.NotContains(t, textOutput, "notes/outside.md")
 
 	filePath := filepath.Join(rootDir, "docs", "with-front-matter.md")
@@ -233,7 +236,7 @@ func TestQueryCommandSupportsSubdirectoryAndFilePathScopes(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(jsonOutput), &envelope))
 	require.NotEmpty(t, envelope.Results)
 	for _, result := range envelope.Results {
-		require.Equal(t, "docs/with-front-matter.md", result.RelPath)
+		require.Equal(t, filepath.ToSlash(filepath.Join(rootDir, "docs", "with-front-matter.md")), result.RelPath)
 	}
 }
 

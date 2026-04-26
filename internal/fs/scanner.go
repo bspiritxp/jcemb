@@ -120,15 +120,10 @@ func newMarkdownFile(rootPath string, filePath string) (File, bool, error) {
 		return File{}, false, err
 	}
 
-	relPath, err := filepath.Rel(rootPath, filePath)
-	if err != nil {
-		return File{}, false, fmt.Errorf("fs: derive relative path for %s: %w", filePath, err)
-	}
-
 	return File{
 		RootDir:  normalizedRoot,
 		FilePath: normalizedFilePath,
-		RelPath:  normalizeRelativePath(relPath),
+		RelPath:  normalizedFilePath,
 		FileName: path.Base(normalizedFilePath),
 		DocType:  markdownDocType,
 		ModTime:  info.ModTime().UTC(),
@@ -142,14 +137,6 @@ func normalizeAbsolutePath(value string) (string, error) {
 	}
 
 	return filepath.ToSlash(filepath.Clean(abs)), nil
-}
-
-func normalizeRelativePath(value string) string {
-	cleaned := path.Clean(filepath.ToSlash(value))
-	if cleaned == "." {
-		return ""
-	}
-	return cleaned
 }
 
 func shouldIgnoreDirectory(name string) bool {
