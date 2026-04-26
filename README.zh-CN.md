@@ -7,7 +7,7 @@
 ## 功能特性
 
 - 仅索引 Markdown 文档。
-- 向量数据存储在 `<root>/.vectordb/`。
+- 统一的全局配置和向量数据存储。
 - 默认 embedding provider：Ollama。
 - 默认 embedding model：`bge-m3`。
 - 支持递归扫描目录。
@@ -17,6 +17,7 @@
 - 标签过滤使用 AND 语义。
 - 支持文本输出和 JSON 输出。
 - 查询结果内置降噪流程：阈值过滤、去重和 MMR 多样性排序。
+- 交互式配置管理。
 
 ## 环境要求
 
@@ -55,6 +56,13 @@ cd jcemb
 go build -o jcemb .
 ```
 
+在 Windows 上，请显式构建带 `.exe` 后缀的可执行文件，避免 PowerShell 通过
+常规可执行文件解析规则运行旧的 `jcemb.exe`：
+
+```powershell
+go build -o jcemb.exe .
+```
+
 查看命令帮助：
 
 ```bash
@@ -72,13 +80,13 @@ jcemb embed /path/to/docs -r
 查询已向量化的文档：
 
 ```bash
-jcemb query "how do I configure the gateway?" --path /path/to/docs -l 10
+jcemb query "how do I configure the gateway?" -l 10
 ```
 
 输出 JSON：
 
 ```bash
-jcemb query "deployment checklist" --path /path/to/docs --json
+jcemb query "deployment checklist" --json
 ```
 
 强制完整重建：
@@ -91,7 +99,7 @@ jcemb embed /path/to/docs -r --force
 
 ### `embed`
 
-将 Markdown 文件写入本地向量库。
+将 Markdown 文件写入统一向量库。
 
 ```bash
 jcemb embed [path] [flags]
@@ -102,21 +110,17 @@ jcemb embed [path] [flags]
 | 参数 | 说明 |
 |---|---|
 | `-r, --recursive` | 递归扫描子目录。 |
-| `-p, --provider` | Embedding provider。默认：`ollama`。 |
-| `-m, --model` | Embedding model。默认：`bge-m3`。 |
+| `-p, --provider` | Embedding provider。默认：来自配置。 |
+| `-m, --model` | Embedding model。默认：来自配置。 |
 | `-c, --concurccy` | 并发 worker 数量。 |
 | `--force` | 即使文件未变化，也强制重新向量化。 |
 | `-t, --type` | 文档类型。目前仅支持 `md`。 |
 
-向量数据和索引清单会写入：
-
-```text
-<path>/.vectordb/
-```
+向量数据和索引清单会存储在统一的全局目录中（例如 Linux 上的 `~/.local/share/jcemb`）。
 
 ### `query`
 
-查询已有的本地向量库。
+查询统一向量库。
 
 ```bash
 jcemb query <query-text> [flags]
@@ -126,7 +130,7 @@ jcemb query <query-text> [flags]
 
 | 参数 | 说明 |
 |---|---|
-| `--path` | 用于向上查找最近 `.vectordb` 的文件或目录。 |
+| `--path` | 可选：限制到已索引的文件或目录。 |
 | `-l, --limit` | 最大返回结果数。默认：`10`。 |
 | `-t, --tags` | 必须匹配的标签。多个标签使用 AND 语义。 |
 | `-u, --unique` | 按 Markdown 文件去重。 |
@@ -137,7 +141,18 @@ jcemb query <query-text> [flags]
 | `--threshold-delta` | 与 top1 分数差距的过滤阈值。负数表示禁用。 |
 | `--mmr-lambda` | MMR 相关性/多样性权重。`1.0` 表示禁用 MMR。 |
 
-`query --path` 可以指向文件或目录。`jcemb` 会从该路径向上查找最近的 `.vectordb`，然后按相对路径前缀过滤结果。
+省略 `--path` 时，`query` 会搜索全局存储中的所有已索引集合。指定
+`--path` 时，它可以指向文件或目录；`jcemb` 会解析集合身份，并按相对路径前缀过滤结果，目录路径会包含其所有后代文件。
+
+### `config`
+
+交互式编辑持久化的 `jcemb` 配置。
+
+```bash
+jcemb config
+```
+
+该命令允许您配置默认的 embedding provider、model 以及其他设置。它需要一个交互式终端。
 
 ## 标签
 
@@ -163,12 +178,14 @@ jcemb query "callback flow" --path /path/to/docs --tags architecture,gateway
 
 ## 工作原理
 
-1. `embed` 扫描 Markdown 文件，并跳过 `.vectordb`、`.git`、`node_modules` 等目录。
+1. `embed` 扫描 Markdown 文件，并跳过 `.git`、`node_modules` 等目录。
 2. 文档按 Markdown 结构切分为 chunks。
 3. 通过配置的 provider 和 model 生成 chunk 向量。
-4. 向量记录和版本化索引清单存储在 `.vectordb` 下。
-5. `query` 使用索引中记录的 provider/model 配置向量化查询文本。
+4. 向量记录和版本化索引清单存储在统一的全局存储目录中。
+5. `query` 使用存储的 provider/model 配置向量化查询文本。
 6. 查询结果经过排序、阈值过滤、可选去重、MMR 多样性排序后，输出为文本或 JSON。
+
+不再创建本地 `.vectordb` 目录。如果在查询过程中检测到旧版 `.vectordb`，`jcemb` 将引导您将该路径重新向量化到统一存储中。
 
 ## 开发
 
@@ -192,30 +209,6 @@ INTEGRATION=1 go test -tags=integration ./...
 
 集成测试需要本地运行 Ollama，并准备好对应模型。
 
-## 发布
-
-推送版本 tag 后，GitHub Actions 会自动构建 release 包：
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-Release workflow 会发布 macOS、Linux、Windows 的 `amd64` 和 `arm64` 二进制包，并附带 `SHA256SUMS` 文件。
-
-## 扩展
-
-Provider、splitter 和 vector store 通过包初始化函数自注册：
-
-```go
-import "github.com/bspiritxp/jcemb/internal/registry"
-
-func init() {
-    registry.MustRegisterProvider("myprovider", factory)
-}
-```
-
-重复注册会主动 panic。测试中可以使用 `internal/registry` 中对应的 reset helper 清理注册表。
 
 ## 许可证
 

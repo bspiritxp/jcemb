@@ -8,9 +8,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bspiritxp/jcemb/internal/domain"
 	"github.com/bspiritxp/jcemb/internal/index"
+	jcpaths "github.com/bspiritxp/jcemb/internal/paths"
 	"github.com/bspiritxp/jcemb/internal/provider/ollama"
 	"github.com/bspiritxp/jcemb/internal/registry"
 	"github.com/bspiritxp/jcemb/internal/splitter/markdown"
@@ -26,7 +28,7 @@ func TestServiceRunCreatesVectorDBOnFirstEmbed(t *testing.T) {
 		"docs/b.md": "# Beta\n\nBeta body.",
 	})
 	provider := newFakeProvider(nil)
-	service := newTestService(provider)
+	service := newTestService(t, provider)
 
 	result, err := service.Run(context.Background(), Request{
 		Path:        rootDir,
@@ -38,12 +40,14 @@ func TestServiceRunCreatesVectorDBOnFirstEmbed(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, Summary{Processed: 2, Updated: 2}, result.Summary)
-	require.FileExists(t, filepath.Join(rootDir, index.DirectoryName, index.ConfigFileName))
-	require.FileExists(t, filepath.Join(rootDir, index.DirectoryName, index.IndexFileName))
-	require.FileExists(t, filepath.Join(rootDir, index.DirectoryName, "lancedb.records.json"))
+	globalDir := collectionDataDir(rootDir, service.deps.ResolveAppPaths)
+	require.NoDirExists(t, filepath.Join(rootDir, index.DirectoryName))
+	require.FileExists(t, filepath.Join(globalDir, index.DirectoryName, index.ConfigFileName))
+	require.FileExists(t, filepath.Join(globalDir, index.DirectoryName, index.IndexFileName))
+	require.FileExists(t, filepath.Join(globalDir, index.DirectoryName, "lancedb.records.json"))
 	require.Greater(t, provider.CallCount(), 0)
 
-	snapshot, loadErr := index.Load(rootDir)
+	snapshot, loadErr := loadSnapshotForTest(rootDir, service.deps.ResolveAppPaths)
 	require.NoError(t, loadErr)
 	require.Len(t, snapshot.Files, 2)
 	require.Equal(t, 3, snapshot.Config.VectorDim)
@@ -56,7 +60,7 @@ func TestServiceRunSkipsUnchangedThenReembedsOnRecipeChangeAndForce(t *testing.T
 		"guide.md": "# Guide\n\nHello world.",
 	})
 	provider := newFakeProvider(nil)
-	service := newTestService(provider)
+	service := newTestService(t, provider)
 
 	_, err := service.Run(context.Background(), Request{
 		Path:        rootDir,
@@ -115,7 +119,7 @@ func TestServiceRunReconcilesDeletedFiles(t *testing.T) {
 		"docs/a.md": "# Alpha\n\nAlpha body.",
 		"docs/b.md": "# Beta\n\nBeta body.",
 	})
-	service := newTestService(newFakeProvider(nil))
+	service := newTestService(t, newFakeProvider(nil))
 
 	_, err := service.Run(context.Background(), Request{
 		Path:        rootDir,
@@ -140,20 +144,23 @@ func TestServiceRunReconcilesDeletedFiles(t *testing.T) {
 	require.Equal(t, Summary{Processed: 1, Skipped: 1, Deleted: 1}, result.Summary)
 	require.Equal(t, []string{"docs/b.md"}, result.Deleted)
 
-	snapshot, loadErr := index.Load(rootDir)
+	snapshot, loadErr := loadSnapshotForTest(rootDir, service.deps.ResolveAppPaths)
 	require.NoError(t, loadErr)
 	require.Len(t, snapshot.Files, 1)
 	require.Equal(t, "docs/a.md", snapshot.Files[0].RelPath)
 
 	store, openErr := lancedb.New(domain.StoreConfig{
-		RootDir:   rootDir,
-		Namespace: lancedb.Name,
-		Provider:  ollama.Name,
-		Model:     ollama.DefaultModel,
-		Splitter:  markdown.Name,
-		VectorDim: snapshot.Config.VectorDim,
-		DBVersion: lancedb.DBVersion,
-		CreatedAt: snapshot.Config.CreatedAt,
+		RootDir:      rootDir,
+		DataDir:      snapshot.Config.DataDir,
+		CollectionID: snapshot.Config.CollectionID,
+		RootIdentity: snapshot.Config.RootIdentity,
+		Namespace:    lancedb.Name,
+		Provider:     ollama.Name,
+		Model:        ollama.DefaultModel,
+		Splitter:     markdown.Name,
+		VectorDim:    snapshot.Config.VectorDim,
+		DBVersion:    lancedb.DBVersion,
+		CreatedAt:    snapshot.Config.CreatedAt,
 	})
 	require.NoError(t, openErr)
 	results, searchErr := store.Search(context.Background(), domain.SearchQuery{Vector: []float32{1, 0, 0}, Limit: 10})
@@ -170,7 +177,7 @@ func TestServiceRunReturnsNonZeroErrorWhenSingleFileFails(t *testing.T) {
 		"docs/bad.md":  "# Bad\n\nThis file should fail.",
 	})
 	provider := newFakeProvider(map[string]error{"docs/bad.md": errors.New("boom")})
-	service := newTestService(provider)
+	service := newTestService(t, provider)
 
 	result, err := service.Run(context.Background(), Request{
 		Path:        rootDir,
@@ -189,14 +196,208 @@ func TestServiceRunReturnsNonZeroErrorWhenSingleFileFails(t *testing.T) {
 	require.Equal(t, "docs/bad.md", result.Failures[0].RelPath)
 	require.Contains(t, result.Failures[0].Err.Error(), "boom")
 
-	snapshot, loadErr := index.Load(rootDir)
+	snapshot, loadErr := loadSnapshotForTest(rootDir, service.deps.ResolveAppPaths)
 	require.NoError(t, loadErr)
 	require.Len(t, snapshot.Files, 1)
 	require.Equal(t, "docs/good.md", snapshot.Files[0].RelPath)
 }
 
-func newTestService(provider *fakeProvider) *Service {
+func TestServiceRunUsesStorageMetadataAuthorityWhenCompatibilityManifestsAreRemoved(t *testing.T) {
+	t.Parallel()
+
+	rootDir := writeDocs(t, map[string]string{
+		"guide.md": "# Guide\n\nHello world.",
+	})
+	provider := newFakeProvider(nil)
+	service := newTestService(t, provider)
+
+	_, err := service.Run(context.Background(), Request{
+		Path:        rootDir,
+		Type:        "md",
+		Concurrency: 1,
+		Provider:    ollama.Name,
+		Model:       ollama.DefaultModel,
+		Recursive:   true,
+	})
+	require.NoError(t, err)
+	firstCalls := provider.CallCount()
+	globalDir := collectionDataDir(rootDir, service.deps.ResolveAppPaths)
+	require.NoError(t, os.Remove(filepath.Join(globalDir, index.DirectoryName, index.ConfigFileName)))
+	require.NoError(t, os.Remove(filepath.Join(globalDir, index.DirectoryName, index.IndexFileName)))
+
+	result, err := service.Run(context.Background(), Request{
+		Path:        rootDir,
+		Type:        "md",
+		Concurrency: 1,
+		Provider:    ollama.Name,
+		Model:       ollama.DefaultModel,
+		Recursive:   true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, Summary{Processed: 1, Skipped: 1}, result.Summary)
+	require.Equal(t, firstCalls, provider.CallCount())
+
+	snapshot, loadErr := loadSnapshotForTest(rootDir, service.deps.ResolveAppPaths)
+	require.NoError(t, loadErr)
+	require.Len(t, snapshot.Files, 1)
+	require.Equal(t, "guide.md", snapshot.Files[0].RelPath)
+	require.False(t, snapshot.Files[0].ModTime.IsZero())
+}
+
+func TestServiceRunDetectsStoredCollectionMetadataMismatchWithoutCompatibilityManifests(t *testing.T) {
+	t.Parallel()
+
+	rootDir := writeDocs(t, map[string]string{
+		"guide.md": "# Guide\n\nHello world.",
+	})
+	provider := newFakeProvider(nil)
+	service := newTestService(t, provider)
+
+	_, err := service.Run(context.Background(), Request{
+		Path:        rootDir,
+		Type:        "md",
+		Concurrency: 1,
+		Provider:    ollama.Name,
+		Model:       ollama.DefaultModel,
+		Recursive:   true,
+	})
+	require.NoError(t, err)
+	firstCalls := provider.CallCount()
+	globalDir := collectionDataDir(rootDir, service.deps.ResolveAppPaths)
+	require.NoError(t, os.Remove(filepath.Join(globalDir, index.DirectoryName, index.ConfigFileName)))
+	require.NoError(t, os.Remove(filepath.Join(globalDir, index.DirectoryName, index.IndexFileName)))
+
+	result, err := service.Run(context.Background(), Request{
+		Path:        rootDir,
+		Type:        "md",
+		Concurrency: 1,
+		Provider:    ollama.Name,
+		Model:       "custom-model",
+		Recursive:   true,
+	})
+	require.NoError(t, err)
+	require.True(t, result.Rebuilt)
+	require.Equal(t, Summary{Processed: 1, Updated: 1}, result.Summary)
+	require.Greater(t, provider.CallCount(), firstCalls)
+
+	snapshot, loadErr := loadSnapshotForTest(rootDir, service.deps.ResolveAppPaths)
+	require.NoError(t, loadErr)
+	require.Equal(t, "custom-model", snapshot.Config.Model)
+}
+
+func TestServiceRunReembedsChangedFileFromStorageMetadataWithoutCompatibilityManifests(t *testing.T) {
+	t.Parallel()
+
+	rootDir := writeDocs(t, map[string]string{
+		"guide.md": "# Guide\n\nHello world.",
+	})
+	provider := newFakeProvider(nil)
+	service := newTestService(t, provider)
+
+	_, err := service.Run(context.Background(), Request{
+		Path:        rootDir,
+		Type:        "md",
+		Concurrency: 1,
+		Provider:    ollama.Name,
+		Model:       ollama.DefaultModel,
+		Recursive:   true,
+	})
+	require.NoError(t, err)
+	firstCalls := provider.CallCount()
+	firstSnapshot, err := loadSnapshotForTest(rootDir, service.deps.ResolveAppPaths)
+	require.NoError(t, err)
+	require.Len(t, firstSnapshot.Files, 1)
+
+	globalDir := collectionDataDir(rootDir, service.deps.ResolveAppPaths)
+	require.NoError(t, os.Remove(filepath.Join(globalDir, index.DirectoryName, index.ConfigFileName)))
+	require.NoError(t, os.Remove(filepath.Join(globalDir, index.DirectoryName, index.IndexFileName)))
+
+	filePath := filepath.Join(rootDir, "guide.md")
+	require.NoError(t, os.WriteFile(filePath, []byte("# Guide\n\nHello storage metadata world."), 0o644))
+	updatedModTime := firstSnapshot.Files[0].ModTime.Add(2 * time.Hour)
+	require.NoError(t, os.Chtimes(filePath, updatedModTime, updatedModTime))
+
+	result, err := service.Run(context.Background(), Request{
+		Path:        rootDir,
+		Type:        "md",
+		Concurrency: 1,
+		Provider:    ollama.Name,
+		Model:       ollama.DefaultModel,
+		Recursive:   true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, Summary{Processed: 1, Updated: 1}, result.Summary)
+	require.Greater(t, provider.CallCount(), firstCalls)
+	require.NoDirExists(t, filepath.Join(rootDir, index.DirectoryName))
+
+	secondSnapshot, err := loadSnapshotForTest(rootDir, service.deps.ResolveAppPaths)
+	require.NoError(t, err)
+	require.Len(t, secondSnapshot.Files, 1)
+	require.NotEqual(t, firstSnapshot.Files[0].FileHash, secondSnapshot.Files[0].FileHash)
+	require.Equal(t, updatedModTime.UTC(), secondSnapshot.Files[0].ModTime)
+}
+
+func TestServiceRunSkipsTouchedFileWhenStoredHashIsUnchangedWithoutCompatibilityManifests(t *testing.T) {
+	t.Parallel()
+
+	rootDir := writeDocs(t, map[string]string{
+		"guide.md": "# Guide\n\nHello world.",
+	})
+	provider := newFakeProvider(nil)
+	service := newTestService(t, provider)
+
+	_, err := service.Run(context.Background(), Request{
+		Path:        rootDir,
+		Type:        "md",
+		Concurrency: 1,
+		Provider:    ollama.Name,
+		Model:       ollama.DefaultModel,
+		Recursive:   true,
+	})
+	require.NoError(t, err)
+	firstCalls := provider.CallCount()
+	firstSnapshot, err := loadSnapshotForTest(rootDir, service.deps.ResolveAppPaths)
+	require.NoError(t, err)
+	require.Len(t, firstSnapshot.Files, 1)
+
+	globalDir := collectionDataDir(rootDir, service.deps.ResolveAppPaths)
+	require.NoError(t, os.Remove(filepath.Join(globalDir, index.DirectoryName, index.ConfigFileName)))
+	require.NoError(t, os.Remove(filepath.Join(globalDir, index.DirectoryName, index.IndexFileName)))
+
+	filePath := filepath.Join(rootDir, "guide.md")
+	touchedModTime := firstSnapshot.Files[0].ModTime.Add(90 * time.Minute)
+	require.NoError(t, os.Chtimes(filePath, touchedModTime, touchedModTime))
+
+	result, err := service.Run(context.Background(), Request{
+		Path:        rootDir,
+		Type:        "md",
+		Concurrency: 1,
+		Provider:    ollama.Name,
+		Model:       ollama.DefaultModel,
+		Recursive:   true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, Summary{Processed: 1, Skipped: 1}, result.Summary)
+	require.Equal(t, firstCalls, provider.CallCount())
+	require.NoDirExists(t, filepath.Join(rootDir, index.DirectoryName))
+
+	secondSnapshot, err := loadSnapshotForTest(rootDir, service.deps.ResolveAppPaths)
+	require.NoError(t, err)
+	require.Len(t, secondSnapshot.Files, 1)
+	require.Equal(t, firstSnapshot.Files[0].FileHash, secondSnapshot.Files[0].FileHash)
+	require.Equal(t, firstSnapshot.Files[0].ModTime, secondSnapshot.Files[0].ModTime)
+}
+
+func newTestService(t *testing.T, provider *fakeProvider) *Service {
+	t.Helper()
+	dataRoot := t.TempDir()
 	return NewService(Dependencies{
+		ResolveAppPaths: func() (jcpaths.AppPaths, error) {
+			return jcpaths.AppPaths{DataRoot: dataRoot, ConfigFile: filepath.Join(dataRoot, "jcemb.json")}, nil
+		},
+		LoadIndex: func(rootDir string) (index.Snapshot, error) {
+			return loadSnapshotFromDataRoot(rootDir, dataRoot)
+		},
 		GetProvider: func(name string) (registry.ProviderFactory, error) {
 			if name != ollama.Name {
 				return nil, errors.New("unknown provider")
@@ -289,4 +490,33 @@ func writeDocs(t *testing.T, files map[string]string) string {
 		require.NoError(t, os.WriteFile(absolutePath, []byte(content), 0o644))
 	}
 	return rootDir
+}
+
+func collectionDataDir(rootDir string, resolve func() (jcpaths.AppPaths, error)) string {
+	paths, err := resolve()
+	if err != nil {
+		panic(err)
+	}
+	return jcpaths.CollectionStorageDir(paths.DataRoot, jcpaths.CollectionIDForRoot(jcpaths.NormalizeStoredPath(rootDir)))
+}
+
+func loadSnapshotForTest(rootDir string, resolve func() (jcpaths.AppPaths, error)) (index.Snapshot, error) {
+	paths, err := resolve()
+	if err != nil {
+		return index.Snapshot{}, err
+	}
+	return loadSnapshotFromDataRoot(rootDir, paths.DataRoot)
+}
+
+func loadSnapshotFromDataRoot(rootDir string, dataRoot string) (index.Snapshot, error) {
+	storageRoot := jcpaths.CollectionStorageDir(dataRoot, jcpaths.CollectionIDForRoot(jcpaths.NormalizeStoredPath(rootDir)))
+	snapshot, err := index.Load(storageRoot)
+	if err != nil {
+		return index.Snapshot{}, err
+	}
+	snapshot.Config.RootDir = rootDir
+	snapshot.Config.RootIdentity = jcpaths.NormalizeStoredPath(rootDir)
+	snapshot.Config.CollectionID = jcpaths.CollectionIDForRoot(snapshot.Config.RootIdentity)
+	snapshot.Config.DataDir = dataRoot
+	return snapshot, nil
 }

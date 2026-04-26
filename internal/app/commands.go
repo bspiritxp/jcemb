@@ -9,32 +9,38 @@ import (
 
 	embedapp "github.com/bspiritxp/jcemb/internal/app/embed"
 	queryapp "github.com/bspiritxp/jcemb/internal/app/query"
+	"github.com/bspiritxp/jcemb/internal/config"
 	"github.com/bspiritxp/jcemb/internal/output"
 )
 
 type EmbedRequest struct {
-	Path        string
-	Type        string
-	Concurrency int
-	Provider    string
-	Model       string
-	Recursive   bool
-	Force       bool
-	OnProgress  func(embedapp.ProgressUpdate)
+	Path            string
+	Type            string
+	Concurrency     int
+	DataDir         string
+	Provider        string
+	ProviderOptions map[string]string
+	Model           string
+	Recursive       bool
+	Force           bool
+	OnProgress      func(embedapp.ProgressUpdate)
 }
 
 type QueryRequest struct {
-	Text           string
-	Tags           []string
-	Limit          int
-	Path           string
-	JSON           bool
-	Unique         bool
-	Full           bool
-	ThresholdAlpha float64
-	ThresholdDelta float64
-	MMRLambda      float64
-	SearchWindow   int
+	Text            string
+	Tags            []string
+	Limit           int
+	Path            string
+	DataDir         string
+	Provider        string
+	ProviderOptions map[string]string
+	JSON            bool
+	Unique          bool
+	Full            bool
+	ThresholdAlpha  float64
+	ThresholdDelta  float64
+	MMRLambda       float64
+	SearchWindow    int
 }
 
 type EmbedResult = embedapp.Result
@@ -42,6 +48,22 @@ type EmbedResult = embedapp.Result
 type QueryResult = queryapp.Result
 
 func RunEmbed(ctx context.Context, request EmbedRequest) (EmbedResult, error) {
+	loaded, err := config.Load()
+	if err != nil {
+		return EmbedResult{}, err
+	}
+	if strings.TrimSpace(request.DataDir) == "" {
+		request.DataDir = loaded.Settings.DataDir
+	}
+	if strings.TrimSpace(request.Provider) == "" {
+		request.Provider = loaded.Settings.Provider
+	}
+	if strings.TrimSpace(request.Model) == "" {
+		request.Model = loaded.Settings.Model
+	}
+	if len(request.ProviderOptions) == 0 {
+		request.ProviderOptions = loaded.Settings.ProviderOptions(request.Provider)
+	}
 	service := embedapp.NewService(embedapp.Dependencies{})
 	return service.Run(ctx, embedapp.Request(request))
 }
@@ -69,19 +91,46 @@ func Embed(request EmbedRequest) error {
 }
 
 func RunQuery(ctx context.Context, request QueryRequest) (QueryResult, error) {
+	loaded, err := config.Load()
+	if err != nil {
+		return QueryResult{}, err
+	}
+	if strings.TrimSpace(request.DataDir) == "" {
+		request.DataDir = loaded.Settings.DataDir
+	}
+	if strings.TrimSpace(request.Provider) == "" {
+		request.Provider = loaded.Settings.Provider
+	}
+	if len(request.ProviderOptions) == 0 {
+		request.ProviderOptions = loaded.Settings.ProviderOptions(request.Provider)
+	}
 	service := queryapp.NewService(queryapp.Dependencies{})
 	return service.Run(ctx, queryapp.Request{
-		Text:           request.Text,
-		Tags:           append([]string(nil), request.Tags...),
-		Limit:          request.Limit,
-		Path:           request.Path,
-		Unique:         request.Unique,
-		Full:           request.Full,
-		ThresholdAlpha: request.ThresholdAlpha,
-		ThresholdDelta: request.ThresholdDelta,
-		MMRLambda:      request.MMRLambda,
-		SearchWindow:   request.SearchWindow,
+		Text:            request.Text,
+		Tags:            append([]string(nil), request.Tags...),
+		Limit:           request.Limit,
+		Path:            request.Path,
+		DataDir:         request.DataDir,
+		Provider:        request.Provider,
+		ProviderOptions: cloneStringMap(request.ProviderOptions),
+		Unique:          request.Unique,
+		Full:            request.Full,
+		ThresholdAlpha:  request.ThresholdAlpha,
+		ThresholdDelta:  request.ThresholdDelta,
+		MMRLambda:       request.MMRLambda,
+		SearchWindow:    request.SearchWindow,
 	})
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func Query(request QueryRequest) error {

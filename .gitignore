@@ -3,9 +3,6 @@
 *.exe
 *.test
 
-# Local vector database
-/.vectordb/
-**/.vectordb/
 
 # Coverage and test artifacts
 coverage.out

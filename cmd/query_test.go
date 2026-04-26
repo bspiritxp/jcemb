@@ -39,6 +39,8 @@ func TestQueryHelpShowsFlags(t *testing.T) {
 	require.Contains(t, output, "--tags")
 	require.Contains(t, output, "--limit")
 	require.Contains(t, output, "--path")
+	require.Contains(t, output, "optional indexed file or directory path to restrict results")
+	require.NotContains(t, output, `default "."`)
 	require.Contains(t, output, "--json")
 	require.Contains(t, output, "--unique")
 	require.Contains(t, output, "--full")

@@ -41,7 +41,24 @@ func TestScanMarkdownRecursiveRespectsIgnoredDirectories(t *testing.T) {
 			FileName: "root.md",
 			DocType:  "md",
 		},
-	}, files)
+	}, []File{
+		{
+			RootDir:  files[0].RootDir,
+			FilePath: files[0].FilePath,
+			RelPath:  files[0].RelPath,
+			FileName: files[0].FileName,
+			DocType:  files[0].DocType,
+		},
+		{
+			RootDir:  files[1].RootDir,
+			FilePath: files[1].FilePath,
+			RelPath:  files[1].RelPath,
+			FileName: files[1].FileName,
+			DocType:  files[1].DocType,
+		},
+	})
+	require.False(t, files[0].ModTime.IsZero())
+	require.False(t, files[1].ModTime.IsZero())
 }
 
 func TestScanMarkdownNonRecursiveOnlyReadsTopLevelMarkdown(t *testing.T) {
@@ -56,6 +73,7 @@ func TestScanMarkdownNonRecursiveOnlyReadsTopLevelMarkdown(t *testing.T) {
 	require.Equal(t, "root.md", files[0].RelPath)
 	require.Equal(t, "root.md", files[0].FileName)
 	require.Equal(t, "md", files[0].DocType)
+	require.False(t, files[0].ModTime.IsZero())
 }
 
 func TestScanMarkdownSupportsSingleFileRoots(t *testing.T) {
@@ -69,4 +87,5 @@ func TestScanMarkdownSupportsSingleFileRoots(t *testing.T) {
 	require.Equal(t, filepath.ToSlash(filepath.Clean(root)), files[0].RootDir)
 	require.Equal(t, "guide.md", files[0].RelPath)
 	require.Equal(t, filepath.ToSlash(filepath.Clean(filePath)), files[0].FilePath)
+	require.False(t, files[0].ModTime.IsZero())
 }

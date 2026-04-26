@@ -5,14 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/bspiritxp/jcemb/internal/config"
 	"github.com/bspiritxp/jcemb/internal/domain"
 	"github.com/bspiritxp/jcemb/internal/index"
+	jcpaths "github.com/bspiritxp/jcemb/internal/paths"
 	"github.com/bspiritxp/jcemb/internal/registry"
 	"github.com/bspiritxp/jcemb/internal/storage/lancedb"
 	"github.com/stretchr/testify/require"
@@ -31,15 +34,19 @@ var (
 func TestEmbedAndQueryCommandsEndToEndWithOfflineFixtureProvider(t *testing.T) {
 	registerFixtureProvider(t)
 	fixtureProviderTracker.Reset()
+	setCommandTestHome(t)
 
 	rootDir := copyFixtureTree(t, "basic")
 
 	_, _, err := executeRootCommand(t, []string{"embed", rootDir, "--provider", testProviderName, "--model", testModelName, "--recursive"})
 	require.NoError(t, err)
 	require.Greater(t, fixtureProviderTracker.CallCount(), 0)
-	require.FileExists(t, filepath.Join(rootDir, index.DirectoryName, index.ConfigFileName))
-	require.FileExists(t, filepath.Join(rootDir, index.DirectoryName, index.IndexFileName))
-	require.FileExists(t, filepath.Join(rootDir, index.DirectoryName, "lancedb.records.json"))
+	dataRoot := config.DefaultSettings().DataDir
+	globalDir := collectionDataDir(rootDir, dataRoot)
+	require.NoDirExists(t, filepath.Join(rootDir, index.DirectoryName))
+	require.FileExists(t, filepath.Join(globalDir, index.DirectoryName, index.ConfigFileName))
+	require.FileExists(t, filepath.Join(globalDir, index.DirectoryName, index.IndexFileName))
+	require.FileExists(t, filepath.Join(globalDir, index.DirectoryName, "lancedb.records.json"))
 
 	textOutput, _, err := executeRootCommand(t, []string{"query", "go vector", "--path", rootDir, "--tags", "go,vector"})
 	require.NoError(t, err)
@@ -112,6 +119,49 @@ func TestEmbedCommandSyncsDeletedAndRenamedFiles(t *testing.T) {
 	require.NotContains(t, jsonOutput, "docs/delete-me.md")
 }
 
+func TestEmbedCommandUsesPersistedConfigDefaultsAndCLIOverridesThem(t *testing.T) {
+	registerFixtureProvider(t)
+	fixtureProviderTracker.Reset()
+	setCommandTestHome(t)
+
+	require.NoError(t, config.Save(config.PersistedConfig{
+		DataDir:   filepath.Join(t.TempDir(), "configured-data-dir"),
+		Provider:  testProviderName,
+		Model:     "config-default-model",
+		VectorDim: config.DefaultVectorDim,
+		Ollama: config.PersistedOllamaConfig{
+			URL:       "http://localhost:11434",
+			BatchSize: 8,
+			Timeout:   "30s",
+		},
+	}))
+	runtime, err := config.Load()
+	require.NoError(t, err)
+	configuredDataRoot := runtime.Settings.DataDir
+
+	firstRoot := copyFixtureTree(t, "basic")
+	_, _, err = executeRootCommand(t, []string{"embed", firstRoot, "--recursive"})
+	require.NoError(t, err)
+	require.NoDirExists(t, filepath.Join(firstRoot, index.DirectoryName))
+	require.FileExists(t, filepath.Join(collectionDataDir(firstRoot, configuredDataRoot), index.DirectoryName, "lancedb.records.json"))
+
+	firstSnapshot, err := index.Load(firstRoot)
+	require.NoError(t, err)
+	require.Equal(t, testProviderName, firstSnapshot.Config.Provider)
+	require.Equal(t, "config-default-model", firstSnapshot.Config.Model)
+
+	secondRoot := copyFixtureTree(t, "basic")
+	_, _, err = executeRootCommand(t, []string{"embed", secondRoot, "--recursive", "--model", "flag-model"})
+	require.NoError(t, err)
+	require.NoDirExists(t, filepath.Join(secondRoot, index.DirectoryName))
+	require.FileExists(t, filepath.Join(collectionDataDir(secondRoot, configuredDataRoot), index.DirectoryName, "lancedb.records.json"))
+
+	secondSnapshot, err := index.Load(secondRoot)
+	require.NoError(t, err)
+	require.Equal(t, testProviderName, secondSnapshot.Config.Provider)
+	require.Equal(t, "flag-model", secondSnapshot.Config.Model)
+}
+
 func TestEmbedCommandReturnsRunErrorForInvalidYAMLFixture(t *testing.T) {
 	registerFixtureProvider(t)
 	fixtureProviderTracker.Reset()
@@ -143,10 +193,28 @@ func TestEmbedCommandReturnsRunErrorForInvalidYAMLFixture(t *testing.T) {
 func TestQueryCommandSupportsSubdirectoryAndFilePathScopes(t *testing.T) {
 	registerFixtureProvider(t)
 	fixtureProviderTracker.Reset()
+	setCommandTestHome(t)
 
 	rootDir := copyFixtureTree(t, "basic")
 	_, _, err := executeRootCommand(t, []string{"embed", rootDir, "--provider", testProviderName, "--model", testModelName, "--recursive"})
 	require.NoError(t, err)
+	secondRoot := copyFixtureTree(t, "basic")
+	require.NoError(t, os.WriteFile(filepath.Join(secondRoot, "docs", "global-only.md"), []byte("# Global Only\n\ngo vector go vector global-only\n"), 0o644))
+	_, _, err = executeRootCommand(t, []string{"embed", secondRoot, "--provider", testProviderName, "--model", testModelName, "--recursive"})
+	require.NoError(t, err)
+
+	globalOutput, _, err := executeRootCommand(t, []string{"query", "go vector", "--json", "--threshold-alpha", "-1", "--threshold-delta", "-1", "--mmr-lambda", "1.0"})
+	require.NoError(t, err)
+	var globalEnvelope struct {
+		RootPath string `json:"root_path"`
+		Results  []struct {
+			RelPath string `json:"rel_path"`
+		} `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(globalOutput), &globalEnvelope))
+	require.Empty(t, globalEnvelope.RootPath)
+	require.Contains(t, collectJSONRelPaths(globalEnvelope.Results), "docs/global-only.md")
+	require.Contains(t, collectJSONRelPaths(globalEnvelope.Results), "docs/with-front-matter.md")
 
 	subdirPath := filepath.Join(rootDir, "docs")
 	textOutput, _, err := executeRootCommand(t, []string{"query", "go vector", "--path", subdirPath})
@@ -169,14 +237,111 @@ func TestQueryCommandSupportsSubdirectoryAndFilePathScopes(t *testing.T) {
 	}
 }
 
-func TestQueryCommandRequiresVectorDBUnderPath(t *testing.T) {
+func collectJSONRelPaths(results []struct {
+	RelPath string `json:"rel_path"`
+}) []string {
+	paths := make([]string, 0, len(results))
+	for _, result := range results {
+		paths = append(paths, result.RelPath)
+	}
+	return paths
+}
+
+func TestQueryCommandUsesStoredMetadataAfterDefaultsChange(t *testing.T) {
+	registerFixtureProvider(t)
+	fixtureProviderTracker.Reset()
+	setCommandTestHome(t)
+
+	configuredDataRoot := filepath.Join(t.TempDir(), "configured-data-dir")
+	require.NoError(t, config.Save(config.PersistedConfig{
+		DataDir:   configuredDataRoot,
+		Provider:  testProviderName,
+		Model:     "initial-default-model",
+		VectorDim: config.DefaultVectorDim,
+		Ollama: config.PersistedOllamaConfig{
+			URL:       "http://localhost:11434",
+			BatchSize: 8,
+			Timeout:   "30s",
+		},
+	}))
+
+	rootDir := copyFixtureTree(t, "basic")
+	_, _, err := executeRootCommand(t, []string{"embed", rootDir, "--provider", testProviderName, "--model", "embedded-model", "--recursive"})
+	require.NoError(t, err)
+	require.FileExists(t, filepath.Join(collectionDataDir(rootDir, configuredDataRoot), index.DirectoryName, "lancedb.records.json"))
+
+	require.NoError(t, config.Save(config.PersistedConfig{
+		DataDir:   configuredDataRoot,
+		Provider:  "changed-default-provider",
+		Model:     "changed-default-model",
+		VectorDim: config.DefaultVectorDim,
+		Ollama: config.PersistedOllamaConfig{
+			URL:       "http://localhost:11434",
+			BatchSize: 8,
+			Timeout:   "30s",
+		},
+	}))
+
+	textOutput, _, err := executeRootCommand(t, []string{"query", "go vector", "--path", rootDir})
+	require.NoError(t, err)
+	require.Contains(t, textOutput, testProviderName+"/embedded-model")
+	require.NotContains(t, textOutput, "changed-default-provider/changed-default-model")
+
+	jsonOutput, _, err := executeRootCommand(t, []string{"query", "go vector", "--path", rootDir, "--json"})
+	require.NoError(t, err)
+	var envelope struct {
+		Provider  string `json:"provider"`
+		Model     string `json:"model"`
+		VectorDim int    `json:"vector_dim"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(jsonOutput), &envelope))
+	require.Equal(t, testProviderName, envelope.Provider)
+	require.Equal(t, "embedded-model", envelope.Model)
+	require.Equal(t, 3, envelope.VectorDim)
+}
+
+func TestConfigCommandFailsClearlyWithoutTTYInput(t *testing.T) {
+	setCommandTestHome(t)
+
+	stdout, stderr, err := executeRootCommandWithInput(t, []string{"config"}, strings.NewReader("\n"))
+	require.Error(t, err)
+	require.Empty(t, stdout)
+	require.Contains(t, err.Error(), "interactive mode requires a terminal on stdin")
+	require.Contains(t, stderr, "Error: config: interactive mode requires a terminal on stdin")
+
+	appPaths, pathsErr := jcpaths.ResolveAppPaths()
+	require.NoError(t, pathsErr)
+	_, statErr := os.Stat(appPaths.ConfigFile)
+	require.Error(t, statErr)
+	require.ErrorIs(t, statErr, fs.ErrNotExist)
+}
+
+func TestQueryCommandFailsClearlyWhenPathIsNotIndexed(t *testing.T) {
 	rootDir := copyFixtureTree(t, "empty")
 
 	_, stderr, err := executeRootCommand(t, []string{"query", "go vector", "--path", rootDir})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), ".vectordb not found")
-	require.Contains(t, stderr, "Error: query: .vectordb not found")
+	require.Contains(t, err.Error(), "path is not indexed")
+	require.Contains(t, stderr, "Error: query: path is not indexed")
 	require.Contains(t, stderr, "Usage:")
+}
+
+func TestQueryCommandFailsClearlyForLegacyLocalIndexFixture(t *testing.T) {
+	setCommandTestHome(t)
+
+	rootDir := copyFixtureTree(t, "legacy-local")
+
+	_, stderr, err := executeRootCommand(t, []string{"query", "go vector", "--path", rootDir})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "legacy local index unsupported")
+	require.Contains(t, stderr, "Error: query: legacy local index unsupported")
+	require.Contains(t, stderr, "Usage:")
+
+	filePath := filepath.Join(rootDir, "docs", "guide.md")
+	_, stderr, err = executeRootCommand(t, []string{"query", "go vector", "--path", filePath})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "legacy local index unsupported")
+	require.Contains(t, stderr, "Error: query: legacy local index unsupported")
 }
 
 type testProviderTracker struct {
@@ -263,12 +428,20 @@ func registerFixtureProvider(t *testing.T) {
 
 func executeRootCommand(t *testing.T, args []string) (string, string, error) {
 	t.Helper()
+	return executeRootCommandWithInput(t, args, nil)
+}
+
+func executeRootCommandWithInput(t *testing.T, args []string, input io.Reader) (string, string, error) {
+	t.Helper()
 
 	cmd := NewRootCmd()
 	stdoutBuffer := &bytes.Buffer{}
 	stderrBuffer := &bytes.Buffer{}
 	cmd.SetOut(stderrBuffer)
 	cmd.SetErr(stderrBuffer)
+	if input != nil {
+		cmd.SetIn(input)
+	}
 	cmd.SetArgs(args)
 
 	originalStdout := os.Stdout
@@ -336,4 +509,20 @@ func collectRelPaths(files []domain.FileState) []string {
 		paths = append(paths, file.RelPath)
 	}
 	return paths
+}
+
+func collectionDataDir(rootDir string, dataRoot string) string {
+	return jcpaths.CollectionStorageDir(dataRoot, jcpaths.CollectionIDForRoot(jcpaths.NormalizeStoredPath(rootDir)))
+}
+
+func setCommandTestHome(t *testing.T) {
+	t.Helper()
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
+	for _, name := range []string{"JCEMB_DATA_DIR", "JCEMB_PROVIDER", "JCEMB_MODEL", "JCEMB_VECTOR_DIM", "JCEMB_OLLAMA_BATCH_SIZE", "JCEMB_OLLAMA_TIMEOUT", "OLLAMA_HOST"} {
+		t.Setenv(name, "")
+	}
 }

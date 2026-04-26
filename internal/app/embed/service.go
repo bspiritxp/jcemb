@@ -15,6 +15,7 @@ import (
 	internalfs "github.com/bspiritxp/jcemb/internal/fs"
 	"github.com/bspiritxp/jcemb/internal/index"
 	"github.com/bspiritxp/jcemb/internal/metadata"
+	jcpaths "github.com/bspiritxp/jcemb/internal/paths"
 	_ "github.com/bspiritxp/jcemb/internal/provider/ollama"
 	"github.com/bspiritxp/jcemb/internal/registry"
 	_ "github.com/bspiritxp/jcemb/internal/splitter/markdown"
@@ -39,14 +40,16 @@ type ProgressUpdate struct {
 }
 
 type Request struct {
-	Path        string
-	Type        string
-	Concurrency int
-	Provider    string
-	Model       string
-	Recursive   bool
-	Force       bool
-	OnProgress  func(ProgressUpdate)
+	Path            string
+	Type            string
+	Concurrency     int
+	DataDir         string
+	Provider        string
+	ProviderOptions map[string]string
+	Model           string
+	Recursive       bool
+	Force           bool
+	OnProgress      func(ProgressUpdate)
 }
 
 type Summary struct {
@@ -83,6 +86,8 @@ type Dependencies struct {
 	LoadFile        func(file internalfs.File) (metadata.SourceDocument, error)
 	LoadIndex       func(rootDir string) (index.Snapshot, error)
 	SaveIndex       func(rootDir string, config domain.StoreConfig, files []domain.FileState) error
+	ResolveAppPaths func() (jcpaths.AppPaths, error)
+	SaveCollection  func(dataRoot string, entry index.CollectionEntry) error
 	RemoveAll       func(path string) error
 	Now             func() time.Time
 	GetProvider     func(name string) (registry.ProviderFactory, error)
@@ -102,6 +107,7 @@ type Service struct {
 
 type pipelineState struct {
 	rootDir         string
+	storageRoot     string
 	request         Request
 	recipe          domain.EmbedRecipe
 	snapshot        index.Snapshot
@@ -147,6 +153,12 @@ func NewService(deps Dependencies) *Service {
 	}
 	if deps.SaveIndex == nil {
 		deps.SaveIndex = index.Save
+	}
+	if deps.ResolveAppPaths == nil {
+		deps.ResolveAppPaths = jcpaths.ResolveAppPaths
+	}
+	if deps.SaveCollection == nil {
+		deps.SaveCollection = index.SaveCollection
 	}
 	if deps.RemoveAll == nil {
 		deps.RemoveAll = os.RemoveAll
@@ -244,7 +256,7 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 	if err != nil {
 		return result, err
 	}
-	provider, err := providerFactory(domain.ProviderConfig{Name: normalized.Provider})
+	provider, err := providerFactory(domain.ProviderConfig{Name: normalized.Provider, Options: cloneStringMap(normalized.ProviderOptions)})
 	if err != nil {
 		return result, err
 	}
@@ -274,6 +286,9 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 			return result, closeErr
 		}
 	}
+	if err := s.registerCollection(state); err != nil {
+		return result, err
+	}
 
 	if result.Summary.Errors > 0 {
 		return result, &RunError{Result: result}
@@ -292,12 +307,25 @@ func (s *Service) normalizeRequest(request Request) (Request, error) {
 	if normalized.Type != defaultType {
 		return Request{}, fmt.Errorf("embed: unsupported type %q", normalized.Type)
 	}
+	if strings.TrimSpace(normalized.DataDir) == "" {
+		paths, err := s.deps.ResolveAppPaths()
+		if err != nil {
+			return Request{}, err
+		}
+		normalized.DataDir = paths.DataRoot
+	}
+	expandedDataDir, err := jcpaths.ExpandUserHome(strings.TrimSpace(normalized.DataDir))
+	if err != nil {
+		return Request{}, fmt.Errorf("embed: resolve data dir: %w", err)
+	}
+	normalized.DataDir = filepath.Clean(expandedDataDir)
 	if strings.TrimSpace(normalized.Provider) == "" {
 		return Request{}, fmt.Errorf("embed: provider is required")
 	}
 	if strings.TrimSpace(normalized.Model) == "" {
 		return Request{}, fmt.Errorf("embed: model is required")
 	}
+	normalized.ProviderOptions = cloneStringMap(normalized.ProviderOptions)
 	if normalized.Concurrency < minimumWorkerConcurrency {
 		normalized.Concurrency = s.deps.DefaultWorkers
 	}
@@ -309,7 +337,8 @@ func (s *Service) buildRecipe(request Request) domain.EmbedRecipe {
 		Type:    request.Type,
 		Version: s.deps.RecipeVersion,
 		Provider: domain.ProviderConfig{
-			Name: request.Provider,
+			Name:    request.Provider,
+			Options: cloneStringMap(request.ProviderOptions),
 		},
 		Model: domain.ModelSpec{
 			Provider: request.Provider,
@@ -327,19 +356,26 @@ func (s *Service) buildRecipe(request Request) domain.EmbedRecipe {
 }
 
 func (s *Service) preparePipelineState(rootDir string, request Request, recipe domain.EmbedRecipe) (*pipelineState, error) {
+	rootIdentity := jcpaths.NormalizeStoredPath(rootDir)
+	collectionID := index.CollectionIDForRoot(rootIdentity)
+	storageRoot := jcpaths.CollectionStorageDir(request.DataDir, collectionID)
 	state := &pipelineState{
-		rootDir: rootDir,
-		request: request,
-		recipe:  recipe,
-		states:  map[string]domain.FileState{},
+		rootDir:     rootDir,
+		storageRoot: storageRoot,
+		request:     request,
+		recipe:      recipe,
+		states:      map[string]domain.FileState{},
 		storeConfig: domain.StoreConfig{
-			RootDir:   rootDir,
-			Namespace: s.deps.VectorStoreName,
-			Provider:  request.Provider,
-			Model:     request.Model,
-			Splitter:  s.deps.SplitterName,
-			DBVersion: lancedb.DBVersion,
-			CreatedAt: s.deps.Now(),
+			CollectionID: collectionID,
+			RootIdentity: rootIdentity,
+			RootDir:      rootDir,
+			DataDir:      request.DataDir,
+			Namespace:    s.deps.VectorStoreName,
+			Provider:     request.Provider,
+			Model:        request.Model,
+			Splitter:     s.deps.SplitterName,
+			DBVersion:    lancedb.DBVersion,
+			CreatedAt:    s.deps.Now(),
 			Flags: map[string]bool{
 				"recursive": request.Recursive,
 				"force":     request.Force,
@@ -372,7 +408,7 @@ func (s *Service) preparePipelineState(rootDir string, request Request, recipe d
 	}
 
 	if state.rebuildRequired {
-		if err := s.deps.RemoveAll(filepath.Join(rootDir, index.DirectoryName)); err != nil {
+		if err := s.deps.RemoveAll(filepath.Join(storageRoot, index.DirectoryName)); err != nil {
 			return nil, fmt.Errorf("embed: reset rebuild state: %w", err)
 		}
 		state.snapshot = index.Snapshot{}
@@ -538,6 +574,7 @@ func (s *Service) executeJob(ctx context.Context, job fileJob, recipe domain.Emb
 		FileName:      document.FileName,
 		DocType:       document.DocType,
 		FileHash:      document.FileHash,
+		ModTime:       job.file.ModTime,
 		RecipeHash:    recipe.Hash(),
 		ChunkIDs:      chunkIDs,
 		ChunkCount:    len(chunkIDs),
@@ -596,6 +633,10 @@ func (s *Service) commitFileResult(ctx context.Context, state *pipelineState, fi
 				return err
 			}
 		}
+		if err := state.store.PutFileState(ctx, fileResult.state); err != nil {
+			delete(state.states, fileResult.relPath)
+			return err
+		}
 	}
 	state.storeConfig.VectorDim = vectorDim
 	return nil
@@ -619,6 +660,11 @@ func (s *Service) reconcileMissingFiles(ctx context.Context, result *Result, sta
 		}
 		if state.store != nil {
 			if err := state.store.DeleteBySource(ctx, relPath); err != nil {
+				result.Failures = append(result.Failures, FileError{RelPath: relPath, Err: err})
+				result.Summary.Errors++
+				continue
+			}
+			if err := state.store.DeleteFileState(ctx, relPath); err != nil {
 				result.Failures = append(result.Failures, FileError{RelPath: relPath, Err: err})
 				result.Summary.Errors++
 				continue
@@ -657,16 +703,29 @@ func (s *Service) ensureStore(ctx context.Context, state *pipelineState, vectorD
 }
 
 func resolveRootDir(inputPath string) (string, error) {
-	absPath, err := filepath.Abs(strings.TrimSpace(inputPath))
+	resolved, err := jcpaths.ResolveCollectionRoot(inputPath)
 	if err != nil {
 		return "", fmt.Errorf("embed: resolve path: %w", err)
 	}
-	info, err := os.Stat(absPath)
-	if err != nil {
-		return "", fmt.Errorf("embed: stat path: %w", err)
+	return resolved.RootDir, nil
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
 	}
-	if info.IsDir() {
-		return absPath, nil
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
 	}
-	return filepath.Dir(absPath), nil
+	return cloned
+}
+
+func (s *Service) registerCollection(state *pipelineState) error {
+	return s.deps.SaveCollection(state.request.DataDir, index.CollectionEntry{
+		CollectionID: state.storeConfig.CollectionID,
+		RootIdentity: state.storeConfig.RootIdentity,
+		RootDir:      state.rootDir,
+		UpdatedAt:    s.deps.Now(),
+	})
 }

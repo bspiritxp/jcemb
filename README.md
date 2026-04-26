@@ -12,7 +12,7 @@ without running a separate vector database service.
 ## Features
 
 - Markdown-only document ingestion.
-- Local vector store under `<root>/.vectordb/`.
+- Unified global storage for configuration and vector data.
 - Default embedding provider: Ollama.
 - Default embedding model: `bge-m3`.
 - Recursive directory embedding.
@@ -22,6 +22,7 @@ without running a separate vector database service.
 - Tag filtering with AND semantics.
 - Text and JSON query output.
 - Built-in result denoising with thresholding, deduplication, and MMR.
+- Interactive configuration management.
 
 ## Requirements
 
@@ -61,6 +62,14 @@ cd jcemb
 go build -o jcemb .
 ```
 
+On Windows, build the executable with the `.exe` suffix so PowerShell runs the
+fresh binary instead of an older `jcemb.exe` found through normal executable
+resolution:
+
+```powershell
+go build -o jcemb.exe .
+```
+
 Run the local binary:
 
 ```bash
@@ -78,13 +87,13 @@ jcemb embed /path/to/docs -r
 Query the embedded documents:
 
 ```bash
-jcemb query "how do I configure the gateway?" --path /path/to/docs -l 10
+jcemb query "how do I configure the gateway?" -l 10
 ```
 
 Return JSON output:
 
 ```bash
-jcemb query "deployment checklist" --path /path/to/docs --json
+jcemb query "deployment checklist" --json
 ```
 
 Force a full rebuild:
@@ -97,7 +106,7 @@ jcemb embed /path/to/docs -r --force
 
 ### `embed`
 
-Embed Markdown files into a local vector store.
+Embed Markdown files into the unified vector store.
 
 ```bash
 jcemb embed [path] [flags]
@@ -108,21 +117,17 @@ Common flags:
 | Flag | Description |
 |---|---|
 | `-r, --recursive` | Scan subdirectories recursively. |
-| `-p, --provider` | Embedding provider. Default: `ollama`. |
-| `-m, --model` | Embedding model. Default: `bge-m3`. |
+| `-p, --provider` | Embedding provider. Default: from config. |
+| `-m, --model` | Embedding model. Default: from config. |
 | `-c, --concurccy` | Number of concurrent workers. |
 | `--force` | Re-embed all documents even if unchanged. |
 | `-t, --type` | Document type. Currently only `md` is supported. |
 
-The vector data and manifests are written to:
-
-```text
-<path>/.vectordb/
-```
+The vector data and manifests are stored in a unified global directory (e.g., `~/.local/share/jcemb` on Linux).
 
 ### `query`
 
-Search an existing local vector store.
+Search the unified vector store.
 
 ```bash
 jcemb query <query-text> [flags]
@@ -132,7 +137,7 @@ Common flags:
 
 | Flag | Description |
 |---|---|
-| `--path` | File or directory used to find the nearest `.vectordb`. |
+| `--path` | Optional indexed file or directory path to restrict results. |
 | `-l, --limit` | Maximum number of results. Default: `10`. |
 | `-t, --tags` | Required tags. Multiple tags use AND semantics. |
 | `-u, --unique` | Deduplicate results by Markdown file. |
@@ -143,8 +148,21 @@ Common flags:
 | `--threshold-delta` | Absolute gap-from-top result cutoff. Negative disables it. |
 | `--mmr-lambda` | MMR relevance/diversity weight. `1.0` disables MMR. |
 
-`query --path` can point to a file or a directory. `jcemb` walks upward to find
-the nearest `.vectordb`, then filters results by the relative path prefix.
+When `--path` is omitted, `query` searches all indexed collections in the
+global store. When `--path` points to a file or directory, `jcemb` resolves the
+collection identity and filters results by the relative path prefix; directory
+paths include all descendants.
+
+### `config`
+
+Interactively edit the persisted `jcemb` configuration.
+
+```bash
+jcemb config
+```
+
+This command allows you to configure the default embedding provider, model, and
+other settings. It requires an interactive terminal.
 
 ## Tags
 
@@ -171,13 +189,18 @@ All requested tags must be present on the matched document.
 ## How It Works
 
 1. `embed` scans Markdown files and skips ignored directories such as
-   `.vectordb`, `.git`, and `node_modules`.
+   `.git` and `node_modules`.
 2. Documents are split by Markdown structure.
 3. Chunks are embedded through the configured provider and model.
-4. Vector records and versioned manifests are stored locally under `.vectordb`.
+4. Vector records and versioned manifests are stored in a unified global
+   storage directory.
 5. `query` embeds the search text with the stored provider/model config.
 6. Results are sorted, thresholded, optionally deduplicated, diversified with
    MMR, and then rendered as text or JSON.
+
+Legacy `.vectordb` directories are no longer created. If a legacy `.vectordb` is
+detected during a query, `jcemb` will guide you to re-embed the path into the
+unified storage.
 
 ## Development
 
@@ -201,34 +224,6 @@ INTEGRATION=1 go test -tags=integration ./...
 
 Integration tests require a running Ollama instance and the configured model.
 
-## Releases
-
-GitHub Actions builds release archives automatically when a version tag is
-pushed:
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-The release workflow publishes macOS, Linux, and Windows binaries for `amd64`
-and `arm64`, plus a `SHA256SUMS` file.
-
-## Extending
-
-Providers, splitters, and vector stores are registered through package
-initializers:
-
-```go
-import "github.com/bspiritxp/jcemb/internal/registry"
-
-func init() {
-    registry.MustRegisterProvider("myprovider", factory)
-}
-```
-
-Duplicate registrations panic by design. Tests can reset registries with the
-corresponding reset helpers in `internal/registry`.
 
 ## License
 

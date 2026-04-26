@@ -3,12 +3,13 @@ package lancedb
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/bspiritxp/jcemb/internal/domain"
-	"github.com/bspiritxp/jcemb/internal/index"
+	jcpaths "github.com/bspiritxp/jcemb/internal/paths"
 	"github.com/bspiritxp/jcemb/internal/registry"
 	"github.com/stretchr/testify/require"
 )
@@ -47,6 +48,29 @@ func TestStoreUpsertSearchRoundTrip(t *testing.T) {
 	require.Equal(t, "chunk-1", results[0].Chunk.ID)
 	require.Equal(t, 1, results[0].Rank)
 	require.InDelta(t, 1.0, results[0].Score, 1e-6)
+}
+
+func TestStoreSearchNormalizesWindowsStylePathPrefix(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	store := newTestStore(t, rootDir, 3)
+
+	require.NoError(t, store.Upsert(context.Background(), []domain.VectorRecord{
+		newVectorRecord("chunk-1", "docs/nested/guide.md", 0, []string{"go"}, []float32{1, 0, 0}),
+		newVectorRecord("chunk-2", "docs/other.md", 0, []string{"go"}, []float32{1, 0, 0}),
+	}))
+
+	results, err := store.Search(context.Background(), domain.SearchQuery{
+		Vector:     []float32{1, 0, 0},
+		Limit:      10,
+		PathPrefix: `DOCS\NESTED`,
+	})
+	require.NoError(t, err)
+	if len(results) != 1 {
+		t.Fatalf("expected one normalized match, got %d", len(results))
+	}
+	require.Equal(t, "docs/nested/guide.md", results[0].Chunk.Metadata.RelPath)
 }
 
 func TestStoreDeleteBySourceRemovesAllMatchingRecords(t *testing.T) {
@@ -99,6 +123,119 @@ func TestStoreSearchPopulatesResultVector(t *testing.T) {
 	if len(again[0].Vector) > 0 {
 		require.NotSame(t, &results[0].Vector[0], &again[0].Vector[0])
 	}
+}
+
+func TestStoreSnapshotRoundTripsCollectionAndFileMetadata(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	dataRoot := t.TempDir()
+	rootIdentity := jcpaths.NormalizeStoredPath(rootDir)
+	storeConfig := domain.StoreConfig{
+		RootDir:      rootDir,
+		DataDir:      dataRoot,
+		CollectionID: jcpaths.CollectionIDForRoot(rootIdentity),
+		RootIdentity: rootIdentity,
+		Namespace:    Name,
+		Provider:     "ollama",
+		Model:        "bge-m3",
+		Splitter:     "markdown",
+		VectorDim:    3,
+		DBVersion:    "lancedb-v1",
+		CreatedAt:    time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC),
+	}
+	vectorStore, err := New(storeConfig)
+	require.NoError(t, err)
+	store, ok := vectorStore.(*Store)
+	require.True(t, ok)
+	state := domain.FileState{
+		Source:        "docs/a.md",
+		FilePath:      filepath.Join(rootDir, "docs", "a.md"),
+		RelPath:       "docs/a.md",
+		FileName:      "a.md",
+		DocType:       "md",
+		FileHash:      "hash-a",
+		ModTime:       time.Date(2026, 4, 22, 12, 2, 0, 0, time.UTC),
+		RecipeHash:    "recipe-a",
+		ChunkIDs:      []string{"chunk-1"},
+		ChunkCount:    1,
+		LastIndexedAt: time.Date(2026, 4, 22, 12, 3, 0, 0, time.UTC),
+	}
+
+	require.NoError(t, store.Upsert(context.Background(), []domain.VectorRecord{
+		newVectorRecord("chunk-1", "docs/a.md", 0, []string{"go"}, []float32{1, 0, 0}),
+	}))
+	require.NoError(t, store.PutFileState(context.Background(), state))
+
+	config, files, err := store.Snapshot(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "ollama", config.Provider)
+	require.Equal(t, "bge-m3", config.Model)
+	require.Equal(t, "markdown", config.Splitter)
+	require.Equal(t, 3, config.VectorDim)
+	require.Equal(t, DBVersion, config.DBVersion)
+	require.Len(t, files, 1)
+	require.Equal(t, state.RelPath, files[0].RelPath)
+	require.Equal(t, state.ModTime, files[0].ModTime)
+	require.Equal(t, state.RecipeHash, files[0].RecipeHash)
+	require.Equal(t, state.ChunkIDs, files[0].ChunkIDs)
+
+	reopenedVectorStore, err := New(storeConfig)
+	require.NoError(t, err)
+	reopened, ok := reopenedVectorStore.(*Store)
+	require.True(t, ok)
+	reopenedConfig, reopenedFiles, err := reopened.Snapshot(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, config.Provider, reopenedConfig.Provider)
+	require.Equal(t, config.Model, reopenedConfig.Model)
+	require.Equal(t, files, reopenedFiles)
+
+	loadedConfig, loadedFiles, err := LoadSnapshot(jcpaths.CollectionStorageDir(dataRoot, storeConfig.CollectionID))
+	require.NoError(t, err)
+	require.Equal(t, dataRoot, loadedConfig.DataDir)
+	require.Equal(t, reopenedConfig.Provider, loadedConfig.Provider)
+	require.Equal(t, reopenedConfig.Model, loadedConfig.Model)
+	require.Equal(t, reopenedConfig.Splitter, loadedConfig.Splitter)
+	require.Equal(t, reopenedConfig.VectorDim, loadedConfig.VectorDim)
+	require.Equal(t, reopenedFiles, loadedFiles)
+}
+
+func TestLoadSnapshotDoesNotFallbackToLegacyLocalStore(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	store := newTestStore(t, rootDir, 3)
+	require.NoError(t, store.PutFileState(context.Background(), domain.FileState{
+		RelPath:       "docs/a.md",
+		FileHash:      "hash-a",
+		RecipeHash:    "recipe-a",
+		ChunkIDs:      []string{"chunk-a"},
+		ChunkCount:    1,
+		LastIndexedAt: time.Date(2026, 4, 22, 12, 3, 0, 0, time.UTC),
+	}))
+
+	_, _, err := LoadSnapshot(rootDir)
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestStoreDeleteFileStateRemovesPersistedMetadata(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	store := newTestStore(t, rootDir, 3)
+	require.NoError(t, store.PutFileState(context.Background(), domain.FileState{
+		RelPath:       "docs/a.md",
+		FileHash:      "hash-a",
+		RecipeHash:    "recipe-a",
+		ChunkIDs:      []string{"chunk-1"},
+		ChunkCount:    1,
+		LastIndexedAt: time.Date(2026, 4, 22, 12, 3, 0, 0, time.UTC),
+	}))
+	require.NoError(t, store.DeleteFileState(context.Background(), "docs/a.md"))
+
+	_, files, err := store.Snapshot(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, files)
 }
 
 func TestStoreSearchHonorsMinScore(t *testing.T) {
@@ -193,7 +330,7 @@ func newTestStore(t *testing.T, rootDir string, vectorDim int) *Store {
 
 	store, ok := vectorStore.(*Store)
 	require.True(t, ok)
-	require.Equal(t, filepath.Join(rootDir, index.DirectoryName, storageFileName), store.storagePath)
+	require.Equal(t, filepath.Join(rootDir, ".vectordb", storageFileName), store.storagePath)
 	return store
 }
 

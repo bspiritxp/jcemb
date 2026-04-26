@@ -10,6 +10,7 @@ import (
 
 	"github.com/bspiritxp/jcemb/internal/domain"
 	"github.com/bspiritxp/jcemb/internal/index"
+	jcpaths "github.com/bspiritxp/jcemb/internal/paths"
 	_ "github.com/bspiritxp/jcemb/internal/provider/ollama"
 	"github.com/bspiritxp/jcemb/internal/registry"
 	"github.com/bspiritxp/jcemb/internal/storage/lancedb"
@@ -29,16 +30,19 @@ const (
 )
 
 type Request struct {
-	Text           string
-	Tags           []string
-	Limit          int
-	Path           string
-	Unique         bool
-	Full           bool
-	ThresholdAlpha float64
-	ThresholdDelta float64
-	MMRLambda      float64
-	SearchWindow   int
+	Text            string
+	Tags            []string
+	Limit           int
+	Path            string
+	DataDir         string
+	Provider        string
+	ProviderOptions map[string]string
+	Unique          bool
+	Full            bool
+	ThresholdAlpha  float64
+	ThresholdDelta  float64
+	MMRLambda       float64
+	SearchWindow    int
 }
 
 type Result struct {
@@ -53,16 +57,23 @@ type Result struct {
 }
 
 type queryScope struct {
-	RootDir    string
-	PathPrefix string
+	RootDir      string
+	RootIdentity string
+	CollectionID string
+	DataDir      string
+	StorageRoot  string
+	PathPrefix   string
 }
 
 type Dependencies struct {
-	LoadIndex      func(rootDir string) (index.Snapshot, error)
-	GetProvider    func(name string) (registry.ProviderFactory, error)
-	GetVectorStore func(name string) (registry.VectorStoreFactory, error)
-	Stat           func(name string) (os.FileInfo, error)
-	VectorStore    string
+	LoadIndex         func(rootDir string) (index.Snapshot, error)
+	LoadCollections   func(dataRoot string) (index.CollectionRegistry, error)
+	ResolveAppPaths   func() (jcpaths.AppPaths, error)
+	ResolveCollection func(dataRoot string, inputPath string) (index.CollectionMatch, error)
+	GetProvider       func(name string) (registry.ProviderFactory, error)
+	GetVectorStore    func(name string) (registry.VectorStoreFactory, error)
+	Stat              func(name string) (os.FileInfo, error)
+	VectorStore       string
 }
 
 type Service struct {
@@ -72,6 +83,15 @@ type Service struct {
 func NewService(deps Dependencies) *Service {
 	if deps.LoadIndex == nil {
 		deps.LoadIndex = index.Load
+	}
+	if deps.LoadCollections == nil {
+		deps.LoadCollections = index.LoadCollectionRegistry
+	}
+	if deps.ResolveAppPaths == nil {
+		deps.ResolveAppPaths = jcpaths.ResolveAppPaths
+	}
+	if deps.ResolveCollection == nil {
+		deps.ResolveCollection = index.ResolveCollection
 	}
 	if deps.GetProvider == nil {
 		deps.GetProvider = registry.GetProvider
@@ -98,58 +118,21 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 		return Result{}, err
 	}
 
-	scope, err := resolveQueryScope(normalized.Path)
+	scopes, err := s.resolveQueryScopes(normalized.Path, normalized.DataDir)
 	if err != nil {
 		return Result{}, err
 	}
-	if err := s.ensureVectorDB(scope.RootDir); err != nil {
-		return Result{}, err
-	}
-
-	snapshot, err := s.deps.LoadIndex(scope.RootDir)
-	if err != nil {
-		switch {
-		case errors.Is(err, index.ErrStateNotFound):
-			return Result{}, fmt.Errorf("query: .vectordb manifests are missing under %s", filepath.Join(scope.RootDir, index.DirectoryName))
-		case errors.Is(err, index.ErrRebuildRequired):
-			return Result{}, fmt.Errorf("query: .vectordb manifests are invalid: %w", err)
-		default:
+	results := make([]domain.SearchResult, 0)
+	manifests := make([]domain.StoreConfig, 0, len(scopes))
+	queryVectors := make([][]float32, 0, len(scopes))
+	for _, scope := range scopes {
+		snapshot, queryVector, collectionResults, err := s.searchScope(ctx, scope, normalized)
+		if err != nil {
 			return Result{}, err
 		}
-	}
-	if err := validateManifest(snapshot.Config); err != nil {
-		return Result{}, err
-	}
-
-	queryVector, err := s.embedQuery(ctx, snapshot.Config, normalized.Text)
-	if err != nil {
-		return Result{}, err
-	}
-
-	factory, err := s.deps.GetVectorStore(s.deps.VectorStore)
-	if err != nil {
-		return Result{}, err
-	}
-
-	storeConfig := snapshot.Config
-	storeConfig.Namespace = s.deps.VectorStore
-	store, err := factory(storeConfig)
-	if err != nil {
-		return Result{}, err
-	}
-	defer store.Close()
-
-	results, err := store.Search(ctx, domain.SearchQuery{
-		Vector:     queryVector,
-		Limit:      effectiveSearchWindow(normalized.Limit, normalized.SearchWindow),
-		Tags:       normalized.Tags,
-		PathPrefix: scope.PathPrefix,
-	})
-	if err != nil {
-		if errors.Is(err, lancedb.ErrVectorDBNotFound) {
-			return Result{}, fmt.Errorf("query: .vectordb storage is not initialized under %s", filepath.Join(scope.RootDir, index.DirectoryName))
-		}
-		return Result{}, err
+		manifests = append(manifests, snapshot.Config)
+		queryVectors = append(queryVectors, queryVector)
+		results = append(results, collectionResults...)
 	}
 
 	sorted := domain.SortSearchResults(results)
@@ -157,15 +140,15 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 	if normalized.Unique {
 		sorted = dedupByRelPath(sorted)
 	}
-	sorted = mmrSelect(queryVector, sorted, normalized.Limit, normalized.MMRLambda)
+	sorted = selectFinalResults(queryVectors, manifests, sorted, normalized.Limit, normalized.MMRLambda)
 
 	return Result{
 		Query:    normalized.Text,
 		Tags:     append([]string(nil), normalized.Tags...),
 		Limit:    normalized.Limit,
 		PathRoot: normalized.Path,
-		RootDir:  scope.RootDir,
-		Manifest: snapshot.Config,
+		RootDir:  resultRootDir(scopes),
+		Manifest: combinedManifest(manifests),
 		Results:  sorted,
 		Full:     normalized.Full,
 	}, nil
@@ -177,9 +160,7 @@ func normalizeRequest(request Request) (Request, error) {
 	if normalized.Text == "" {
 		return Request{}, fmt.Errorf("query: text is required")
 	}
-	if strings.TrimSpace(normalized.Path) == "" {
-		normalized.Path = "."
-	}
+	normalized.Path = strings.TrimSpace(normalized.Path)
 	normalized.Tags = domain.NormalizeTags(normalized.Tags)
 	if normalized.Limit <= 0 {
 		normalized.Limit = defaultLimit
@@ -208,6 +189,8 @@ func normalizeRequest(request Request) (Request, error) {
 	if normalized.SearchWindow < 0 {
 		normalized.SearchWindow = 0
 	}
+	normalized.Provider = strings.TrimSpace(normalized.Provider)
+	normalized.ProviderOptions = cloneStringMap(normalized.ProviderOptions)
 	return normalized, nil
 }
 
@@ -255,21 +238,6 @@ func applyDynamicThreshold(results []domain.SearchResult, alpha, delta float64) 
 	return filtered
 }
 
-func (s *Service) ensureVectorDB(rootDir string) error {
-	vectorDBPath := filepath.Join(rootDir, index.DirectoryName)
-	info, err := s.deps.Stat(vectorDBPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("query: .vectordb not found under %s", rootDir)
-		}
-		return fmt.Errorf("query: stat .vectordb: %w", err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("query: .vectordb is not a directory under %s", rootDir)
-	}
-	return nil
-}
-
 func validateManifest(config domain.StoreConfig) error {
 	if strings.TrimSpace(config.Provider) == "" {
 		return fmt.Errorf("query: manifest provider is required")
@@ -286,13 +254,18 @@ func validateManifest(config domain.StoreConfig) error {
 	return nil
 }
 
-func (s *Service) embedQuery(ctx context.Context, config domain.StoreConfig, text string) ([]float32, error) {
+func (s *Service) embedQuery(ctx context.Context, config domain.StoreConfig, request Request) ([]float32, error) {
 	providerFactory, err := s.deps.GetProvider(config.Provider)
 	if err != nil {
 		return nil, fmt.Errorf("query: provider %q is not available: %w", config.Provider, err)
 	}
 
-	provider, err := providerFactory(domain.ProviderConfig{Name: config.Provider})
+	providerConfig := domain.ProviderConfig{Name: config.Provider}
+	if request.Provider == config.Provider {
+		providerConfig.Options = cloneStringMap(request.ProviderOptions)
+	}
+
+	provider, err := providerFactory(providerConfig)
 	if err != nil {
 		return nil, fmt.Errorf("query: initialize provider %q: %w", config.Provider, err)
 	}
@@ -314,7 +287,7 @@ func (s *Service) embedQuery(ctx context.Context, config domain.StoreConfig, tex
 				Name:     config.Model,
 			},
 		},
-		Inputs: []domain.EmbedInput{{ChunkID: queryChunkID, Text: text}},
+		Inputs: []domain.EmbedInput{{ChunkID: queryChunkID, Text: request.Text}},
 	})
 	if err != nil {
 		return nil, err
@@ -330,50 +303,227 @@ func (s *Service) embedQuery(ctx context.Context, config domain.StoreConfig, tex
 	return vector, nil
 }
 
-func resolveQueryScope(inputPath string) (queryScope, error) {
-	absPath, err := filepath.Abs(strings.TrimSpace(inputPath))
-	if err != nil {
-		return queryScope{}, fmt.Errorf("query: resolve path: %w", err)
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
 	}
-	info, err := os.Stat(absPath)
-	if err != nil {
-		return queryScope{}, fmt.Errorf("query: stat path: %w", err)
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
 	}
+	return cloned
+}
 
-	targetRoot := absPath
-	if !info.IsDir() {
-		targetRoot = filepath.Dir(absPath)
-	}
-
-	current := targetRoot
-	for {
-		vectorDBPath := filepath.Join(current, index.DirectoryName)
-		vectorDBInfo, statErr := os.Stat(vectorDBPath)
+func (s *Service) searchScope(ctx context.Context, scope queryScope, request Request) (index.Snapshot, []float32, []domain.SearchResult, error) {
+	snapshot, err := s.deps.LoadIndex(scope.StorageRoot)
+	if err != nil {
 		switch {
-		case statErr == nil && vectorDBInfo.IsDir():
-			prefix, prefixErr := filepath.Rel(current, absPath)
-			if prefixErr != nil {
-				return queryScope{}, fmt.Errorf("query: compute path prefix: %w", prefixErr)
+		case errors.Is(err, index.ErrStateNotFound):
+			return index.Snapshot{}, nil, nil, fmt.Errorf("query: .vectordb manifests are missing under %s", filepath.Join(scope.StorageRoot, index.DirectoryName))
+		case errors.Is(err, index.ErrRebuildRequired):
+			return index.Snapshot{}, nil, nil, fmt.Errorf("query: .vectordb manifests are invalid: %w", err)
+		default:
+			return index.Snapshot{}, nil, nil, err
+		}
+	}
+	snapshot.Config.RootDir = scope.RootDir
+	snapshot.Config.RootIdentity = scope.RootIdentity
+	snapshot.Config.CollectionID = scope.CollectionID
+	snapshot.Config.DataDir = scope.DataDir
+	if err := validateManifest(snapshot.Config); err != nil {
+		return index.Snapshot{}, nil, nil, err
+	}
+
+	queryVector, err := s.embedQuery(ctx, snapshot.Config, request)
+	if err != nil {
+		return index.Snapshot{}, nil, nil, err
+	}
+
+	factory, err := s.deps.GetVectorStore(s.deps.VectorStore)
+	if err != nil {
+		return index.Snapshot{}, nil, nil, err
+	}
+
+	storeConfig := snapshot.Config
+	storeConfig.Namespace = s.deps.VectorStore
+	store, err := factory(storeConfig)
+	if err != nil {
+		return index.Snapshot{}, nil, nil, err
+	}
+	defer store.Close()
+
+	results, err := store.Search(ctx, domain.SearchQuery{
+		Vector:     queryVector,
+		Limit:      effectiveSearchWindow(request.Limit, request.SearchWindow),
+		Tags:       request.Tags,
+		PathPrefix: scope.PathPrefix,
+	})
+	if err != nil {
+		if errors.Is(err, lancedb.ErrVectorDBNotFound) {
+			return index.Snapshot{}, nil, nil, fmt.Errorf("query: .vectordb storage is not initialized under %s", filepath.Join(scope.StorageRoot, index.DirectoryName))
+		}
+		return index.Snapshot{}, nil, nil, err
+	}
+
+	return snapshot, queryVector, results, nil
+}
+
+func (s *Service) resolveQueryScopes(inputPath string, dataDir string) ([]queryScope, error) {
+	if strings.TrimSpace(dataDir) == "" {
+		paths, err := s.deps.ResolveAppPaths()
+		if err != nil {
+			return nil, err
+		}
+		dataDir = paths.DataRoot
+	}
+	expandedDataDir, err := jcpaths.ExpandUserHome(strings.TrimSpace(dataDir))
+	if err != nil {
+		return nil, fmt.Errorf("query: resolve data dir: %w", err)
+	}
+	dataDir = filepath.Clean(expandedDataDir)
+	if strings.TrimSpace(inputPath) == "" {
+		return s.resolveGlobalQueryScopes(dataDir)
+	}
+	return s.resolvePathQueryScopes(inputPath, dataDir)
+}
+
+func (s *Service) resolvePathQueryScopes(inputPath string, dataDir string) ([]queryScope, error) {
+	match, err := s.deps.ResolveCollection(dataDir, inputPath)
+	if err != nil {
+		if errors.Is(err, index.ErrCollectionNotFound) {
+			legacyDBPath, legacyFound, legacyErr := s.findLegacyLocalIndex(inputPath)
+			if legacyErr != nil {
+				return nil, fmt.Errorf("query: inspect legacy local index: %w", legacyErr)
 			}
-			prefix = filepath.ToSlash(prefix)
-			if info.IsDir() && prefix == "." {
-				prefix = ""
+			if legacyFound {
+				return nil, fmt.Errorf("query: legacy local index unsupported at %s; run jcemb embed %s to rebuild into unified storage", legacyDBPath, strings.TrimSpace(inputPath))
 			}
-			return queryScope{RootDir: current, PathPrefix: prefix}, nil
-		case statErr == nil:
-			return queryScope{}, fmt.Errorf("query: .vectordb is not a directory under %s", current)
-		case !errors.Is(statErr, os.ErrNotExist):
-			return queryScope{}, fmt.Errorf("query: stat .vectordb: %w", statErr)
+			return nil, fmt.Errorf("query: path is not indexed: %s", strings.TrimSpace(inputPath))
+		}
+		return nil, fmt.Errorf("query: resolve path: %w", err)
+	}
+
+	return []queryScope{{
+		RootDir:      match.RootDir,
+		RootIdentity: match.RootIdentity,
+		CollectionID: match.CollectionID,
+		DataDir:      dataDir,
+		StorageRoot:  jcpaths.CollectionStorageDir(dataDir, match.CollectionID),
+		PathPrefix:   match.PathPrefix,
+	}}, nil
+}
+
+func (s *Service) resolveGlobalQueryScopes(dataDir string) ([]queryScope, error) {
+	registry, err := s.deps.LoadCollections(dataDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, noIndexedCollectionsError(dataDir)
+		}
+		return nil, fmt.Errorf("query: load collection registry: %w", err)
+	}
+	if len(registry.Collections) == 0 {
+		return nil, noIndexedCollectionsError(dataDir)
+	}
+
+	scopes := make([]queryScope, 0, len(registry.Collections))
+	for _, entry := range registry.Collections {
+		info, statErr := s.deps.Stat(entry.RootDir)
+		if statErr != nil || !info.IsDir() {
+			continue
+		}
+		scopes = append(scopes, queryScope{
+			RootDir:      entry.RootDir,
+			RootIdentity: entry.RootIdentity,
+			CollectionID: entry.CollectionID,
+			DataDir:      dataDir,
+			StorageRoot:  jcpaths.CollectionStorageDir(dataDir, entry.CollectionID),
+		})
+	}
+	if len(scopes) == 0 {
+		return nil, noIndexedCollectionsError(dataDir)
+	}
+	return scopes, nil
+}
+
+func noIndexedCollectionsError(dataDir string) error {
+	return fmt.Errorf("query: no usable indexed collections in %s; run jcemb embed <path> -r first", dataDir)
+}
+
+func resultRootDir(scopes []queryScope) string {
+	if len(scopes) == 1 {
+		return scopes[0].RootDir
+	}
+	return ""
+}
+
+func combinedManifest(manifests []domain.StoreConfig) domain.StoreConfig {
+	if len(manifests) == 0 {
+		return domain.StoreConfig{}
+	}
+	combined := manifests[0]
+	for _, manifest := range manifests[1:] {
+		if combined.Provider != manifest.Provider {
+			combined.Provider = "multiple"
+		}
+		if combined.Model != manifest.Model {
+			combined.Model = "multiple"
+		}
+		if combined.VectorDim != manifest.VectorDim {
+			combined.VectorDim = 0
+		}
+		if combined.DBVersion != manifest.DBVersion {
+			combined.DBVersion = "multiple"
+		}
+	}
+	if len(manifests) > 1 {
+		combined.RootDir = ""
+		combined.RootIdentity = ""
+		combined.CollectionID = ""
+	}
+	return combined
+}
+
+func selectFinalResults(queryVectors [][]float32, manifests []domain.StoreConfig, results []domain.SearchResult, limit int, lambda float64) []domain.SearchResult {
+	if len(queryVectors) == 0 || !compatibleManifestsForMMR(manifests) {
+		return truncateAndRerank(results, limit)
+	}
+	return mmrSelect(queryVectors[0], results, limit, lambda)
+}
+
+func compatibleManifestsForMMR(manifests []domain.StoreConfig) bool {
+	if len(manifests) <= 1 {
+		return true
+	}
+	first := manifests[0]
+	for _, manifest := range manifests[1:] {
+		if first.Provider != manifest.Provider || first.Model != manifest.Model || first.VectorDim != manifest.VectorDim {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Service) findLegacyLocalIndex(inputPath string) (string, bool, error) {
+	resolved, err := jcpaths.ResolveCollectionRoot(inputPath)
+	if err != nil {
+		return "", false, err
+	}
+
+	for current := resolved.RootDir; ; current = filepath.Dir(current) {
+		candidate := filepath.Join(current, index.DirectoryName)
+		info, statErr := s.deps.Stat(candidate)
+		switch {
+		case statErr == nil && info.IsDir():
+			return candidate, true, nil
+		case statErr != nil && !os.IsNotExist(statErr):
+			return "", false, statErr
 		}
 
 		parent := filepath.Dir(current)
 		if parent == current {
-			break
+			return "", false, nil
 		}
-		current = parent
 	}
-
-	return queryScope{RootDir: targetRoot}, nil
 }
 
 func dedupByRelPath(results []domain.SearchResult) []domain.SearchResult {

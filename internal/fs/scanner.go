@@ -7,6 +7,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const markdownDocType = "md"
@@ -28,6 +29,7 @@ type File struct {
 	RelPath  string
 	FileName string
 	DocType  string
+	ModTime  time.Time
 }
 
 func ScanMarkdown(options ScanOptions) ([]File, error) {
@@ -103,6 +105,11 @@ func newMarkdownFile(rootPath string, filePath string) (File, bool, error) {
 		return File{}, false, nil
 	}
 
+	info, err := os.Stat(filePath)
+	if err != nil {
+		return File{}, false, fmt.Errorf("fs: stat %s: %w", filePath, err)
+	}
+
 	normalizedRoot, err := normalizeAbsolutePath(rootPath)
 	if err != nil {
 		return File{}, false, err
@@ -124,6 +131,7 @@ func newMarkdownFile(rootPath string, filePath string) (File, bool, error) {
 		RelPath:  normalizeRelativePath(relPath),
 		FileName: path.Base(normalizedFilePath),
 		DocType:  markdownDocType,
+		ModTime:  info.ModTime().UTC(),
 	}, true, nil
 }
 

@@ -17,19 +17,27 @@ type EmbedOptions struct {
 }
 
 func NewEmbedCmd() *cobra.Command {
+	return newEmbedCmd(app.NewBootstrap())
+}
+
+func newEmbedCmd(bootstrap app.Bootstrap) *cobra.Command {
 	defaults := config.Defaults()
 	options := EmbedOptions{
 		Type:        "md",
 		Concurrency: 2,
-		Provider:    "ollama",
-		Model:       "bge-m3",
+		Provider:    bootstrap.Config.Settings.Provider,
+		Model:       bootstrap.Config.Settings.Model,
 	}
 
 	cmd := &cobra.Command{
 		Use:   "embed [path]",
-		Short: "Embed Markdown files into the local vector store",
+		Short: "Embed Markdown files into the unified vector store",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := bootstrap.Validate(); err != nil {
+				return err
+			}
+
 			path := defaults.DefaultPath
 			if len(args) == 1 {
 				path = args[0]
@@ -38,14 +46,16 @@ func NewEmbedCmd() *cobra.Command {
 			progress := output.NewEmbedProgressBar(cmd.OutOrStdout())
 
 			result, err := app.RunEmbed(cmd.Context(), app.EmbedRequest{
-				Path:        path,
-				Type:        options.Type,
-				Concurrency: options.Concurrency,
-				Provider:    options.Provider,
-				Model:       options.Model,
-				Recursive:   options.Recursive,
-				Force:       options.Force,
-				OnProgress:  progress.Update,
+				Path:            path,
+				Type:            options.Type,
+				Concurrency:     options.Concurrency,
+				DataDir:         bootstrap.Config.Settings.DataDir,
+				Provider:        options.Provider,
+				ProviderOptions: bootstrap.Config.Settings.ProviderOptions(options.Provider),
+				Model:           options.Model,
+				Recursive:       options.Recursive,
+				Force:           options.Force,
+				OnProgress:      progress.Update,
 			})
 			if err != nil {
 				return err

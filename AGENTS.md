@@ -20,8 +20,8 @@ go build -o jcemb .
 # Embed a directory recursively
 ./jcemb embed /path/to/docs -r
 
-# Query (searches upward for .vectordb)
-./jcemb query "search text" --path /path/to/docs -l 10
+# Query globally across indexed collections
+./jcemb query "search text" -l 10
 
 # JSON output
 ./jcemb query "search text" --path /path/to/docs --json
@@ -80,7 +80,7 @@ func init() {
 - **Incrementality**: embed skips unchanged files by comparing `file_hash + recipe_hash`. Use `--force` to rebuild all.
 - **Reconcile**: deleted/renamed files are cleaned from both index and vector store on the next embed.
 - **Tag filter**: `--tags a,b` means **AND** semantics (result must contain both tags).
-- **Path filter**: `query --path` accepts a file or directory. The system walks **up** the tree to find `.vectordb`, then filters by the relative prefix.
+- **Path filter**: `query --path` accepts a file or directory and filters by the relative prefix; directory paths include descendants. Omit `--path` for global search across all indexed collections.
 - **Chunk ID stability**: derived from `rel_path + recipe_hash + chunk_index (+ section fingerprint)` so re-embeds are deterministic.
 - **Concurrency flag typo**: the CLI flag is `--concurccy` (matches original spec), but internal fields use `concurrency`.
 
@@ -117,3 +117,19 @@ func init() {
 - `lancedb` here is a **local JSON-file adapter**, not the real LanceDB server/SDK.
 - Do not put business logic in `cmd/` or `main.go`; keep commands thin.
 - Scanner skips `.vectordb`, `.git`, and `node_modules` automatically.
+
+## Extending
+
+Providers, splitters, and vector stores are registered through package
+initializers:
+
+```go
+import "github.com/bspiritxp/jcemb/internal/registry"
+
+func init() {
+    registry.MustRegisterProvider("myprovider", factory)
+}
+```
+
+Duplicate registrations panic by design. Tests can reset registries with the
+corresponding reset helpers in `internal/registry`.

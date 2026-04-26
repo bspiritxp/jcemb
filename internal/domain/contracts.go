@@ -102,7 +102,10 @@ func SortSearchResults(results []SearchResult) []SearchResult {
 }
 
 type StoreConfig struct {
+	CollectionID    string
+	RootIdentity    string
 	RootDir         string
+	DataDir         string
 	Namespace       string
 	Provider        string
 	Model           string
@@ -131,6 +134,7 @@ type FileState struct {
 	FileName      string
 	DocType       string
 	FileHash      string
+	ModTime       time.Time
 	RecipeHash    string
 	ChunkIDs      []string
 	ChunkCount    int
@@ -156,6 +160,9 @@ type VectorStore interface {
 	Config() StoreConfig
 	Upsert(ctx context.Context, chunks []VectorRecord) error
 	DeleteBySource(ctx context.Context, source string) error
+	PutFileState(ctx context.Context, state FileState) error
+	DeleteFileState(ctx context.Context, relPath string) error
+	Snapshot(ctx context.Context) (StoreConfig, []FileState, error)
 	Search(ctx context.Context, query SearchQuery) ([]SearchResult, error)
 	Close() error
 }

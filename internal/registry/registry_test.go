@@ -190,6 +190,18 @@ func (s stubVectorStore) DeleteBySource(ctx context.Context, source string) erro
 	return nil
 }
 
+func (s stubVectorStore) PutFileState(ctx context.Context, state domain.FileState) error {
+	return nil
+}
+
+func (s stubVectorStore) DeleteFileState(ctx context.Context, relPath string) error {
+	return nil
+}
+
+func (s stubVectorStore) Snapshot(ctx context.Context) (domain.StoreConfig, []domain.FileState, error) {
+	return s.config, nil, nil
+}
+
 func (s stubVectorStore) Search(ctx context.Context, query domain.SearchQuery) ([]domain.SearchResult, error) {
 	return nil, nil
 }

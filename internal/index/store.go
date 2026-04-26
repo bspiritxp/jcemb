@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/bspiritxp/jcemb/internal/domain"
+	jcpaths "github.com/bspiritxp/jcemb/internal/paths"
+	"github.com/bspiritxp/jcemb/internal/storage/lancedb"
 )
 
 const (
@@ -38,72 +40,47 @@ type fileManifest struct {
 }
 
 type fileManifestEntry struct {
-	Path       string    `json:"path"`
-	FileHash   string    `json:"file_hash"`
-	RecipeHash string    `json:"recipe_hash"`
-	ChunkIDs   []string  `json:"chunk_ids"`
-	ChunkCount int       `json:"chunk_count"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	Path       string     `json:"path"`
+	FileHash   string     `json:"file_hash"`
+	ModTime    *time.Time `json:"mod_time,omitempty"`
+	RecipeHash string     `json:"recipe_hash"`
+	ChunkIDs   []string   `json:"chunk_ids"`
+	ChunkCount int        `json:"chunk_count"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
 type ConfigManifest struct {
-	Version    string    `json:"version"`
-	Generation string    `json:"generation"`
-	Provider   string    `json:"provider"`
-	Model      string    `json:"model"`
-	Splitter   string    `json:"splitter"`
-	VectorDim  int       `json:"vector_dim"`
-	DBVersion  string    `json:"db_version"`
-	CreatedAt  time.Time `json:"created_at"`
+	CollectionID string    `json:"collection_id,omitempty"`
+	RootIdentity string    `json:"root_identity,omitempty"`
+	Version      string    `json:"version"`
+	Generation   string    `json:"generation"`
+	Provider     string    `json:"provider"`
+	Model        string    `json:"model"`
+	Splitter     string    `json:"splitter"`
+	VectorDim    int       `json:"vector_dim"`
+	DBVersion    string    `json:"db_version"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 func Load(rootDir string) (Snapshot, error) {
-	configPath := configPath(rootDir)
-	indexPath := indexPath(rootDir)
-
-	configExists, err := fileExists(configPath)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	indexExists, err := fileExists(indexPath)
-	if err != nil {
-		return Snapshot{}, err
-	}
-
+	storageConfig, storageFiles, storageErr := lancedb.LoadSnapshot(rootDir)
 	switch {
-	case !configExists && !indexExists:
+	case storageErr == nil:
+		return Snapshot{Config: storageConfig, Files: storageFiles}, nil
+	case !errors.Is(storageErr, os.ErrNotExist):
+		return Snapshot{}, fmt.Errorf("%w: storage metadata unreadable: %v", ErrRebuildRequired, storageErr)
+	default:
 		return Snapshot{}, ErrStateNotFound
-	case !configExists || !indexExists:
-		return Snapshot{}, fmt.Errorf("%w: config/index pair incomplete", ErrRebuildRequired)
 	}
-
-	config, err := readConfigManifest(configPath)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	manifest, err := readFileManifest(indexPath)
-	if err != nil {
-		return Snapshot{}, err
-	}
-
-	if config.Generation != manifest.Generation {
-		return Snapshot{}, fmt.Errorf("%w: config/index generation mismatch", ErrRebuildRequired)
-	}
-
-	states := make([]domain.FileState, 0, len(manifest.Files))
-	for _, entry := range manifest.Files {
-		states = append(states, entry.toDomain())
-	}
-	sortFileStates(states)
-
-	return Snapshot{
-		Config: config.toDomain(rootDir),
-		Files:  states,
-	}, nil
 }
 
 func Save(rootDir string, config domain.StoreConfig, files []domain.FileState) error {
 	manifestDir := dbPath(rootDir)
+	if candidate, err := collectionDBPath(config); err != nil {
+		return err
+	} else if candidate != "" {
+		manifestDir = candidate
+	}
 	if err := os.MkdirAll(manifestDir, 0o755); err != nil {
 		return fmt.Errorf("index: create manifest directory: %w", err)
 	}
@@ -147,14 +124,6 @@ func Save(rootDir string, config domain.StoreConfig, files []domain.FileState) e
 	return nil
 }
 
-func configPath(rootDir string) string {
-	return filepath.Join(dbPath(rootDir), ConfigFileName)
-}
-
-func indexPath(rootDir string) string {
-	return filepath.Join(dbPath(rootDir), IndexFileName)
-}
-
 func dbPath(rootDir string) string {
 	return filepath.Join(rootDir, DirectoryName)
 }
@@ -165,9 +134,15 @@ func fileManifestFromDomain(files []domain.FileState, generation string) fileMan
 
 	entries := make([]fileManifestEntry, 0, len(states))
 	for _, state := range states {
+		var modTime *time.Time
+		if !state.ModTime.IsZero() {
+			value := state.ModTime.UTC()
+			modTime = &value
+		}
 		entries = append(entries, fileManifestEntry{
 			Path:       strings.TrimSpace(state.RelPath),
 			FileHash:   strings.TrimSpace(state.FileHash),
+			ModTime:    modTime,
 			RecipeHash: strings.TrimSpace(state.RecipeHash),
 			ChunkIDs:   append([]string(nil), state.ChunkIDs...),
 			ChunkCount: state.ChunkCount,
@@ -183,73 +158,28 @@ func fileManifestFromDomain(files []domain.FileState, generation string) fileMan
 }
 
 func configManifestFromDomain(config domain.StoreConfig, generation string, createdAt time.Time) ConfigManifest {
+	rootIdentity := strings.TrimSpace(config.RootIdentity)
+	if rootIdentity == "" {
+		rootIdentity = jcpaths.NormalizeStoredPath(config.RootDir)
+	}
+
+	collectionID := strings.TrimSpace(config.CollectionID)
+	if collectionID == "" {
+		collectionID = CollectionIDForRoot(rootIdentity)
+	}
+
 	return ConfigManifest{
-		Version:    SchemaVersionV1,
-		Generation: generation,
-		Provider:   strings.TrimSpace(config.Provider),
-		Model:      strings.TrimSpace(config.Model),
-		Splitter:   strings.TrimSpace(config.Splitter),
-		VectorDim:  config.VectorDim,
-		DBVersion:  strings.TrimSpace(config.DBVersion),
-		CreatedAt:  createdAt,
+		CollectionID: collectionID,
+		RootIdentity: rootIdentity,
+		Version:      SchemaVersionV1,
+		Generation:   generation,
+		Provider:     strings.TrimSpace(config.Provider),
+		Model:        strings.TrimSpace(config.Model),
+		Splitter:     strings.TrimSpace(config.Splitter),
+		VectorDim:    config.VectorDim,
+		DBVersion:    strings.TrimSpace(config.DBVersion),
+		CreatedAt:    createdAt,
 	}
-}
-
-func (m ConfigManifest) toDomain(rootDir string) domain.StoreConfig {
-	return domain.StoreConfig{
-		RootDir:         rootDir,
-		Provider:        m.Provider,
-		Model:           m.Model,
-		Splitter:        m.Splitter,
-		VectorDim:       m.VectorDim,
-		ManifestVersion: m.Version,
-		DBVersion:       m.DBVersion,
-		CreatedAt:       m.CreatedAt,
-	}
-}
-
-func (e fileManifestEntry) toDomain() domain.FileState {
-	return domain.FileState{
-		RelPath:       e.Path,
-		FileHash:      e.FileHash,
-		RecipeHash:    e.RecipeHash,
-		ChunkIDs:      append([]string(nil), e.ChunkIDs...),
-		ChunkCount:    e.ChunkCount,
-		LastIndexedAt: e.UpdatedAt,
-	}
-}
-
-func readConfigManifest(path string) (ConfigManifest, error) {
-	var manifest ConfigManifest
-	if err := readJSON(path, &manifest); err != nil {
-		return ConfigManifest{}, fmt.Errorf("%w: config manifest unreadable: %v", ErrRebuildRequired, err)
-	}
-	if err := manifest.validate(); err != nil {
-		return ConfigManifest{}, fmt.Errorf("%w: %v", ErrRebuildRequired, err)
-	}
-	return manifest, nil
-}
-
-func readFileManifest(path string) (fileManifest, error) {
-	var manifest fileManifest
-	if err := readJSON(path, &manifest); err != nil {
-		return fileManifest{}, fmt.Errorf("%w: index manifest unreadable: %v", ErrRebuildRequired, err)
-	}
-	if err := manifest.validate(); err != nil {
-		return fileManifest{}, fmt.Errorf("%w: %v", ErrRebuildRequired, err)
-	}
-	return manifest, nil
-}
-
-func readJSON(path string, target any) error {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	if err := json.Unmarshal(content, target); err != nil {
-		return err
-	}
-	return nil
 }
 
 func writeAtomicJSON(dir string, name string, value any) (string, error) {
@@ -274,15 +204,15 @@ func writeAtomicJSON(dir string, name string, value any) (string, error) {
 	return file.Name(), nil
 }
 
-func fileExists(path string) (bool, error) {
-	_, err := os.Stat(path)
-	if err == nil {
-		return true, nil
+func readJSON(path string, target any) error {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return err
 	}
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
+	if err := json.Unmarshal(content, target); err != nil {
+		return err
 	}
-	return false, err
+	return nil
 }
 
 func sortFileStates(states []domain.FileState) {
@@ -347,6 +277,14 @@ func (m ConfigManifest) validate() error {
 	if strings.TrimSpace(m.Generation) == "" {
 		return fmt.Errorf("index: config manifest generation is required")
 	}
+	if rootIdentity := strings.TrimSpace(m.RootIdentity); rootIdentity != "" {
+		if strings.TrimSpace(m.CollectionID) == "" {
+			return fmt.Errorf("index: config collection_id is required when root_identity is present")
+		}
+		if rootIdentity != jcpaths.NormalizeStoredPath(rootIdentity) {
+			return fmt.Errorf("index: config root_identity must be normalized")
+		}
+	}
 	if strings.TrimSpace(m.Provider) == "" {
 		return fmt.Errorf("index: config provider is required")
 	}
@@ -366,4 +304,15 @@ func (m ConfigManifest) validate() error {
 		return fmt.Errorf("index: config created_at is required")
 	}
 	return nil
+}
+
+func CollectionIDForRoot(rootIdentity string) string {
+	return jcpaths.CollectionIDForRoot(rootIdentity)
+}
+
+func collectionDBPath(config domain.StoreConfig) (string, error) {
+	if strings.TrimSpace(config.CollectionID) == "" || strings.TrimSpace(config.DataDir) == "" {
+		return "", nil
+	}
+	return filepath.Join(jcpaths.CollectionStorageDir(config.DataDir, config.CollectionID), DirectoryName), nil
 }

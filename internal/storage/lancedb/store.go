@@ -7,14 +7,15 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/bspiritxp/jcemb/internal/config"
 	"github.com/bspiritxp/jcemb/internal/domain"
-	"github.com/bspiritxp/jcemb/internal/index"
+	jcpaths "github.com/bspiritxp/jcemb/internal/paths"
 	"github.com/bspiritxp/jcemb/internal/registry"
 )
 
@@ -22,6 +23,8 @@ const (
 	Name              = "lancedb"
 	DBVersion         = "lancedb-v1"
 	storageFormatV1   = "v1"
+	storageFormatV2   = "v2"
+	storageDirName    = ".vectordb"
 	storageFileName   = "lancedb.records.json"
 	missingVectorDB   = "lancedb: .vectordb not initialized"
 	dimensionMismatch = "lancedb: vector dimension mismatch"
@@ -38,11 +41,40 @@ type Store struct {
 	storagePath string
 	initialized bool
 	records     map[string]domain.VectorRecord
+	fileStates  map[string]domain.FileState
 }
 
 type persistedStore struct {
-	Version string                  `json:"version"`
-	Records []persistedVectorRecord `json:"records"`
+	Version    string                  `json:"version"`
+	Collection persistedCollection     `json:"collection,omitempty"`
+	Files      []persistedFileState    `json:"files,omitempty"`
+	Records    []persistedVectorRecord `json:"records"`
+}
+
+type persistedCollection struct {
+	CollectionID string          `json:"collection_id,omitempty"`
+	RootIdentity string          `json:"root_identity,omitempty"`
+	Provider     string          `json:"provider"`
+	Model        string          `json:"model"`
+	Splitter     string          `json:"splitter"`
+	VectorDim    int             `json:"vector_dim"`
+	DBVersion    string          `json:"db_version"`
+	CreatedAt    time.Time       `json:"created_at"`
+	Flags        map[string]bool `json:"flags,omitempty"`
+}
+
+type persistedFileState struct {
+	Source        string     `json:"source,omitempty"`
+	FilePath      string     `json:"file_path,omitempty"`
+	RelPath       string     `json:"rel_path"`
+	FileName      string     `json:"file_name,omitempty"`
+	DocType       string     `json:"doc_type,omitempty"`
+	FileHash      string     `json:"file_hash"`
+	ModTime       *time.Time `json:"mod_time,omitempty"`
+	RecipeHash    string     `json:"recipe_hash"`
+	ChunkIDs      []string   `json:"chunk_ids"`
+	ChunkCount    int        `json:"chunk_count"`
+	LastIndexedAt time.Time  `json:"last_indexed_at"`
 }
 
 type persistedVectorRecord struct {
@@ -65,8 +97,9 @@ func New(config domain.StoreConfig) (domain.VectorStore, error) {
 
 	store := &Store{
 		config:      cloneConfig(config),
-		storagePath: filepath.Join(trimmedRoot, index.DirectoryName, storageFileName),
+		storagePath: filepath.Join(resolveStorageRoot(config), storageDirName, storageFileName),
 		records:     make(map[string]domain.VectorRecord),
+		fileStates:  make(map[string]domain.FileState),
 	}
 
 	if err := store.load(); err != nil {
@@ -148,6 +181,73 @@ func (s *Store) DeleteBySource(ctx context.Context, source string) error {
 
 	s.initialized = true
 	return nil
+}
+
+func (s *Store) PutFileState(ctx context.Context, state domain.FileState) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(state.RelPath) == "" {
+		return fmt.Errorf("lancedb: file state rel_path is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.ensureLoaded(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	s.fileStates[state.RelPath] = cloneFileState(state)
+	if err := s.persistLocked(); err != nil {
+		return err
+	}
+
+	s.initialized = true
+	return nil
+}
+
+func (s *Store) DeleteFileState(ctx context.Context, relPath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	trimmedRelPath := strings.TrimSpace(relPath)
+	if trimmedRelPath == "" {
+		return fmt.Errorf("lancedb: file state rel_path is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.ensureLoaded(); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+
+	delete(s.fileStates, trimmedRelPath)
+	if err := s.persistLocked(); err != nil {
+		return err
+	}
+
+	s.initialized = true
+	return nil
+}
+
+func (s *Store) Snapshot(ctx context.Context) (domain.StoreConfig, []domain.FileState, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.StoreConfig{}, nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.ensureLoaded(); err != nil {
+		return domain.StoreConfig{}, nil, err
+	}
+
+	return cloneConfig(s.config), cloneFileStatesMap(s.fileStates), nil
 }
 
 func (s *Store) Search(ctx context.Context, query domain.SearchQuery) ([]domain.SearchResult, error) {
@@ -241,17 +341,14 @@ func (s *Store) ensureLoaded() error {
 }
 
 func (s *Store) load() error {
-	payload, err := os.ReadFile(s.storagePath)
+	persisted, err := readPersistedStore(s.storagePath)
 	if err != nil {
 		return err
 	}
 
-	var persisted persistedStore
-	if err := json.Unmarshal(payload, &persisted); err != nil {
-		return fmt.Errorf("lancedb: decode store: %w", err)
-	}
-	if strings.TrimSpace(persisted.Version) != storageFormatV1 {
-		return fmt.Errorf("lancedb: unsupported store version %q", persisted.Version)
+	config := cloneConfig(s.config)
+	if persisted.Version == storageFormatV2 {
+		config = persisted.Collection.toDomain(config)
 	}
 
 	loaded := make(map[string]domain.VectorRecord, len(persisted.Records))
@@ -266,7 +363,18 @@ func (s *Store) load() error {
 		loaded[record.Chunk.ID] = record
 	}
 
+	states := make(map[string]domain.FileState, len(persisted.Files))
+	for index, entry := range persisted.Files {
+		state, err := entry.toDomain()
+		if err != nil {
+			return fmt.Errorf("lancedb: files[%d]: %w", index, err)
+		}
+		states[state.RelPath] = state
+	}
+
+	s.config = config
 	s.records = loaded
+	s.fileStates = states
 	s.initialized = true
 	return nil
 }
@@ -291,6 +399,16 @@ func (s *Store) persistLocked() error {
 		})
 	}
 
+	files := make([]persistedFileState, 0, len(s.fileStates))
+	paths := make([]string, 0, len(s.fileStates))
+	for relPath := range s.fileStates {
+		paths = append(paths, relPath)
+	}
+	sort.Strings(paths)
+	for _, relPath := range paths {
+		files = append(files, persistedFileStateFromDomain(s.fileStates[relPath]))
+	}
+
 	file, err := os.CreateTemp(filepath.Dir(s.storagePath), storageFileName+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("lancedb: create temp store file: %w", err)
@@ -298,7 +416,12 @@ func (s *Store) persistLocked() error {
 
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(persistedStore{Version: storageFormatV1, Records: records}); err != nil {
+	if err := encoder.Encode(persistedStore{
+		Version:    storageFormatV2,
+		Collection: persistedCollectionFromDomain(s.config),
+		Files:      files,
+		Records:    records,
+	}); err != nil {
 		_ = file.Close()
 		_ = os.Remove(file.Name())
 		return fmt.Errorf("lancedb: encode store: %w", err)
@@ -313,6 +436,228 @@ func (s *Store) persistLocked() error {
 	}
 
 	return nil
+}
+
+func LoadSnapshot(rootDir string) (domain.StoreConfig, []domain.FileState, error) {
+	persisted, storagePath, err := loadPersistedSnapshot(rootDir)
+	if err != nil {
+		return domain.StoreConfig{}, nil, err
+	}
+	if persisted.Version != storageFormatV2 {
+		return domain.StoreConfig{}, nil, fmt.Errorf("lancedb: storage metadata unavailable for store version %q", persisted.Version)
+	}
+
+	config := persisted.Collection.toDomain(domain.StoreConfig{RootDir: strings.TrimSpace(rootDir), Namespace: Name})
+	if dataDir, ok := resolveDataDirFromSnapshotPath(storagePath); ok {
+		config.DataDir = dataDir
+	}
+	states := make([]domain.FileState, 0, len(persisted.Files))
+	for index, entry := range persisted.Files {
+		state, err := entry.toDomain()
+		if err != nil {
+			return domain.StoreConfig{}, nil, fmt.Errorf("lancedb: files[%d]: %w", index, err)
+		}
+		states = append(states, state)
+	}
+	sort.Slice(states, func(i int, j int) bool {
+		return strings.Compare(states[i].RelPath, states[j].RelPath) < 0
+	})
+	return config, states, nil
+}
+
+func loadPersistedSnapshot(rootDir string) (persistedStore, string, error) {
+	globalPath, err := resolveSnapshotPath(rootDir)
+	if err != nil {
+		return persistedStore{}, "", err
+	}
+	persisted, readErr := readPersistedStore(globalPath)
+	switch {
+	case readErr == nil:
+		return persisted, globalPath, nil
+	case !errors.Is(readErr, os.ErrNotExist):
+		return persistedStore{}, "", readErr
+	}
+	return persistedStore{}, "", readErr
+}
+
+func resolveSnapshotPath(rootDir string) (string, error) {
+	cleanRoot := filepath.Clean(strings.TrimSpace(rootDir))
+	if isUnifiedStorageRoot(cleanRoot) {
+		return filepath.Join(cleanRoot, storageDirName, storageFileName), nil
+	}
+
+	resolved, err := jcpaths.ResolveCollectionRoot(rootDir)
+	if err != nil {
+		return "", nil
+	}
+	dataRoot, err := resolveDataRoot("")
+	if err != nil {
+		return "", err
+	}
+	collectionID := jcpaths.CollectionIDForRoot(resolved.Identity)
+	if collectionID == "" {
+		return "", nil
+	}
+	return filepath.Join(jcpaths.CollectionStorageDir(dataRoot, collectionID), storageDirName, storageFileName), nil
+}
+
+func resolveDataDirFromSnapshotPath(storagePath string) (string, bool) {
+	cleanPath := filepath.Clean(strings.TrimSpace(storagePath))
+	if cleanPath == "" || cleanPath == "." {
+		return "", false
+	}
+
+	storageDir := filepath.Dir(cleanPath)
+	if filepath.Base(storageDir) != storageDirName {
+		return "", false
+	}
+
+	collectionDir := filepath.Dir(storageDir)
+	if filepath.Base(filepath.Dir(collectionDir)) != "collections" {
+		return "", false
+	}
+
+	dataRoot := filepath.Dir(filepath.Dir(collectionDir))
+	if strings.TrimSpace(dataRoot) == "" || dataRoot == "." {
+		return "", false
+	}
+
+	return dataRoot, true
+}
+
+func resolveStorageRoot(config domain.StoreConfig) string {
+	dataRoot, err := resolveDataRoot(config.DataDir)
+	if err == nil && strings.TrimSpace(config.CollectionID) != "" {
+		return jcpaths.CollectionStorageDir(dataRoot, config.CollectionID)
+	}
+	return strings.TrimSpace(config.RootDir)
+}
+
+func resolveDataRoot(explicit string) (string, error) {
+	if trimmed := strings.TrimSpace(explicit); trimmed != "" {
+		expanded, err := jcpaths.ExpandUserHome(trimmed)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Clean(expanded), nil
+	}
+	runtime, err := config.Load()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(runtime.Settings.DataDir), nil
+}
+
+func isUnifiedStorageRoot(rootDir string) bool {
+	parent := filepath.Dir(rootDir)
+	return filepath.Base(parent) == "collections" && filepath.Base(rootDir) != "." && filepath.Base(rootDir) != string(filepath.Separator)
+}
+
+func readPersistedStore(path string) (persistedStore, error) {
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		return persistedStore{}, err
+	}
+
+	var persisted persistedStore
+	if err := json.Unmarshal(payload, &persisted); err != nil {
+		return persistedStore{}, fmt.Errorf("lancedb: decode store: %w", err)
+	}
+	version := strings.TrimSpace(persisted.Version)
+	if version != storageFormatV1 && version != storageFormatV2 {
+		return persistedStore{}, fmt.Errorf("lancedb: unsupported store version %q", persisted.Version)
+	}
+	return persisted, nil
+}
+
+func persistedCollectionFromDomain(config domain.StoreConfig) persistedCollection {
+	return persistedCollection{
+		CollectionID: strings.TrimSpace(config.CollectionID),
+		RootIdentity: strings.TrimSpace(config.RootIdentity),
+		Provider:     strings.TrimSpace(config.Provider),
+		Model:        strings.TrimSpace(config.Model),
+		Splitter:     strings.TrimSpace(config.Splitter),
+		VectorDim:    config.VectorDim,
+		DBVersion:    strings.TrimSpace(config.DBVersion),
+		CreatedAt:    config.CreatedAt.UTC(),
+		Flags:        cloneBoolMap(config.Flags),
+	}
+}
+
+func (p persistedCollection) toDomain(base domain.StoreConfig) domain.StoreConfig {
+	config := cloneConfig(base)
+	config.CollectionID = strings.TrimSpace(p.CollectionID)
+	config.RootIdentity = strings.TrimSpace(p.RootIdentity)
+	config.Provider = strings.TrimSpace(p.Provider)
+	config.Model = strings.TrimSpace(p.Model)
+	config.Splitter = strings.TrimSpace(p.Splitter)
+	config.VectorDim = p.VectorDim
+	config.DBVersion = strings.TrimSpace(p.DBVersion)
+	config.CreatedAt = p.CreatedAt
+	config.Flags = cloneBoolMap(p.Flags)
+	return config
+}
+
+func persistedFileStateFromDomain(state domain.FileState) persistedFileState {
+	entry := persistedFileState{
+		Source:        state.Source,
+		FilePath:      state.FilePath,
+		RelPath:       state.RelPath,
+		FileName:      state.FileName,
+		DocType:       state.DocType,
+		FileHash:      state.FileHash,
+		RecipeHash:    state.RecipeHash,
+		ChunkIDs:      append([]string(nil), state.ChunkIDs...),
+		ChunkCount:    state.ChunkCount,
+		LastIndexedAt: state.LastIndexedAt.UTC(),
+	}
+	if !state.ModTime.IsZero() {
+		modTime := state.ModTime.UTC()
+		entry.ModTime = &modTime
+	}
+	return entry
+}
+
+func (p persistedFileState) toDomain() (domain.FileState, error) {
+	state := domain.FileState{
+		Source:        p.Source,
+		FilePath:      p.FilePath,
+		RelPath:       strings.TrimSpace(p.RelPath),
+		FileName:      p.FileName,
+		DocType:       p.DocType,
+		FileHash:      strings.TrimSpace(p.FileHash),
+		RecipeHash:    strings.TrimSpace(p.RecipeHash),
+		ChunkIDs:      append([]string(nil), p.ChunkIDs...),
+		ChunkCount:    p.ChunkCount,
+		LastIndexedAt: p.LastIndexedAt,
+	}
+	if p.ModTime != nil {
+		state.ModTime = p.ModTime.UTC()
+	}
+	if state.RelPath == "" {
+		return domain.FileState{}, fmt.Errorf("rel_path is required")
+	}
+	if state.FileHash == "" {
+		return domain.FileState{}, fmt.Errorf("file_hash is required")
+	}
+	if state.RecipeHash == "" {
+		return domain.FileState{}, fmt.Errorf("recipe_hash is required")
+	}
+	if state.ChunkCount < 0 {
+		return domain.FileState{}, fmt.Errorf("chunk_count must be >= 0")
+	}
+	if len(state.ChunkIDs) != state.ChunkCount {
+		return domain.FileState{}, fmt.Errorf("chunk_count must match chunk_ids length")
+	}
+	if state.LastIndexedAt.IsZero() {
+		return domain.FileState{}, fmt.Errorf("last_indexed_at is required")
+	}
+	for index, chunkID := range state.ChunkIDs {
+		if strings.TrimSpace(chunkID) == "" {
+			return domain.FileState{}, fmt.Errorf("chunk_ids[%d] is required", index)
+		}
+	}
+	return state, nil
 }
 
 func matchesTags(recordTags []string, queryTags []string) bool {
@@ -349,15 +694,7 @@ func matchesPathPrefix(relPath string, prefix string) bool {
 }
 
 func normalizePathPrefix(value string) string {
-	trimmed := strings.TrimSpace(strings.ReplaceAll(value, "\\", "/"))
-	if trimmed == "" || trimmed == "." {
-		return ""
-	}
-	cleaned := path.Clean(trimmed)
-	if cleaned == "." {
-		return ""
-	}
-	return strings.TrimPrefix(cleaned, "./")
+	return jcpaths.NormalizeStoredPath(value)
 }
 
 func cosineSimilarity(left []float32, right []float32) float64 {
@@ -382,11 +719,17 @@ func cosineSimilarity(left []float32, right []float32) float64 {
 
 func cloneConfig(config domain.StoreConfig) domain.StoreConfig {
 	cloned := config
-	if config.Flags != nil {
-		cloned.Flags = make(map[string]bool, len(config.Flags))
-		for key, value := range config.Flags {
-			cloned.Flags[key] = value
-		}
+	cloned.Flags = cloneBoolMap(config.Flags)
+	return cloned
+}
+
+func cloneBoolMap(values map[string]bool) map[string]bool {
+	if values == nil {
+		return nil
+	}
+	cloned := make(map[string]bool, len(values))
+	for key, value := range values {
+		cloned[key] = value
 	}
 	return cloned
 }
@@ -437,5 +780,22 @@ func cloneMap(values map[string]any) map[string]any {
 	for key, value := range values {
 		cloned[key] = value
 	}
+	return cloned
+}
+
+func cloneFileState(state domain.FileState) domain.FileState {
+	cloned := state
+	cloned.ChunkIDs = append([]string(nil), state.ChunkIDs...)
+	return cloned
+}
+
+func cloneFileStatesMap(states map[string]domain.FileState) []domain.FileState {
+	cloned := make([]domain.FileState, 0, len(states))
+	for _, state := range states {
+		cloned = append(cloned, cloneFileState(state))
+	}
+	sort.Slice(cloned, func(i int, j int) bool {
+		return strings.Compare(cloned[i].RelPath, cloned[j].RelPath) < 0
+	})
 	return cloned
 }

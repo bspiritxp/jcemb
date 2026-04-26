@@ -11,19 +11,89 @@ import (
 
 	"github.com/bspiritxp/jcemb/internal/domain"
 	"github.com/bspiritxp/jcemb/internal/index"
+	jcpaths "github.com/bspiritxp/jcemb/internal/paths"
 	"github.com/bspiritxp/jcemb/internal/provider/ollama"
 	"github.com/bspiritxp/jcemb/internal/registry"
 	"github.com/bspiritxp/jcemb/internal/storage/lancedb"
 	"github.com/stretchr/testify/require"
 )
 
-func TestServiceRunRequiresVectorDBDirectory(t *testing.T) {
+func TestServiceRunFailsWhenPathIsNotIndexed(t *testing.T) {
 	t.Parallel()
 
-	service := NewService(Dependencies{})
+	service := NewService(Dependencies{ResolveAppPaths: newTestAppPaths(t, t.TempDir())})
 	_, err := service.Run(context.Background(), Request{Text: "hello", Path: t.TempDir()})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), ".vectordb not found")
+	require.Contains(t, err.Error(), "path is not indexed")
+}
+
+func TestServiceRunFailsClearlyWhenLegacyLocalIndexExists(t *testing.T) {
+	t.Parallel()
+
+	dataRoot := t.TempDir()
+	workspace := t.TempDir()
+	rootDir := filepath.Join(workspace, "collection")
+	filePath := filepath.Join(rootDir, "docs", "guide.md")
+	require.NoError(t, os.MkdirAll(filepath.Join(rootDir, index.DirectoryName), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Dir(filePath), 0o755))
+	require.NoError(t, os.WriteFile(filePath, []byte("# Guide\n"), 0o644))
+
+	service := NewService(Dependencies{ResolveAppPaths: newTestAppPaths(t, dataRoot)})
+
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{name: "directory input", path: rootDir},
+		{name: "file input", path: filePath},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := service.Run(context.Background(), Request{Text: "hello", Path: tc.path})
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "legacy local index unsupported")
+			require.Contains(t, err.Error(), "run jcemb embed")
+			require.Contains(t, err.Error(), tc.path)
+		})
+	}
+}
+
+func TestServiceRunIgnoresLegacyLocalStorageWhenRegistryResolvesGlobalCollection(t *testing.T) {
+	t.Parallel()
+
+	dataRoot := t.TempDir()
+	rootDir := t.TempDir()
+	createdAt := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	config := testStoreConfig(rootDir, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt)
+	require.NoError(t, index.SaveCollection(dataRoot, index.CollectionEntry{RootDir: rootDir}))
+
+	legacyStore, err := lancedb.New(domain.StoreConfig{
+		RootDir:   rootDir,
+		Namespace: lancedb.Name,
+		Provider:  ollama.Name,
+		Model:     ollama.DefaultModel,
+		Splitter:  "markdown",
+		VectorDim: 3,
+		DBVersion: lancedb.DBVersion,
+		CreatedAt: createdAt,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, legacyStore.Close()) })
+	require.NoError(t, legacyStore.(interface {
+		PutFileState(context.Context, domain.FileState) error
+	}).PutFileState(context.Background(), domain.FileState{
+		RelPath:       "docs/legacy.md",
+		FileHash:      "legacy-hash",
+		RecipeHash:    "legacy-recipe",
+		ChunkIDs:      []string{"legacy-chunk"},
+		ChunkCount:    1,
+		LastIndexedAt: createdAt,
+	}))
+
+	service := NewService(Dependencies{ResolveAppPaths: newTestAppPaths(t, dataRoot)})
+	_, err = service.Run(context.Background(), Request{Text: "hello", Path: rootDir})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), filepath.Join(jcpaths.CollectionStorageDir(dataRoot, config.CollectionID), index.DirectoryName))
+	require.NotContains(t, err.Error(), filepath.Join(rootDir, index.DirectoryName))
 }
 
 func TestServiceRunUsesManifestProviderAndStableSorting(t *testing.T) {
@@ -31,21 +101,15 @@ func TestServiceRunUsesManifestProviderAndStableSorting(t *testing.T) {
 
 	rootDir := t.TempDir()
 	createdAt := time.Date(2026, 4, 22, 15, 0, 0, 0, time.UTC)
-	config := domain.StoreConfig{
-		RootDir:   rootDir,
-		Provider:  ollama.Name,
-		Model:     ollama.DefaultModel,
-		Splitter:  "markdown",
-		VectorDim: 3,
-		DBVersion: lancedb.DBVersion,
-		CreatedAt: createdAt,
-	}
+	dataRoot := t.TempDir()
+	config := testStoreConfig(rootDir, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt)
 	files := []domain.FileState{
 		{RelPath: "docs/b.md", FileHash: "hash-b", RecipeHash: "recipe", ChunkIDs: []string{"chunk-b"}, ChunkCount: 1, LastIndexedAt: createdAt},
 		{RelPath: "docs/a.md", FileHash: "hash-a", RecipeHash: "recipe", ChunkIDs: []string{"chunk-a"}, ChunkCount: 1, LastIndexedAt: createdAt},
 		{RelPath: "docs/c.md", FileHash: "hash-c", RecipeHash: "recipe", ChunkIDs: []string{"chunk-c"}, ChunkCount: 1, LastIndexedAt: createdAt},
 	}
-	require.NoError(t, index.Save(rootDir, config, files))
+	persistIndexedCollection(t, config, files)
+	registerCollectionAt(t, dataRoot, rootDir)
 
 	store, err := lancedb.New(config)
 	require.NoError(t, err)
@@ -58,6 +122,7 @@ func TestServiceRunUsesManifestProviderAndStableSorting(t *testing.T) {
 
 	provider := &fakeProvider{vector: []float32{1, 0, 0}}
 	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
 		GetProvider: func(name string) (registry.ProviderFactory, error) {
 			require.Equal(t, ollama.Name, name)
 			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
@@ -91,33 +156,32 @@ func TestServiceRunUsesManifestProviderAndStableSorting(t *testing.T) {
 	}
 }
 
-func TestServiceRunFindsNearestVectorDBAndUsesRelativePathPrefix(t *testing.T) {
+func TestServiceRunUsesLongestIndexedRootAndPreservesRelativePathPrefix(t *testing.T) {
 	t.Parallel()
 
-	rootDir := t.TempDir()
+	workspace := t.TempDir()
+	rootDir := filepath.Join(workspace, "docs")
+	nestedRoot := filepath.Join(rootDir, "nested")
 	createdAt := time.Date(2026, 4, 22, 15, 0, 0, 0, time.UTC)
-	config := domain.StoreConfig{
-		RootDir:   rootDir,
-		Provider:  ollama.Name,
-		Model:     ollama.DefaultModel,
-		Splitter:  "markdown",
-		VectorDim: 3,
-		DBVersion: lancedb.DBVersion,
-		CreatedAt: createdAt,
-	}
-	require.NoError(t, os.MkdirAll(filepath.Join(rootDir, "docs", "nested"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(rootDir, "docs", "nested", "guide.md"), []byte("# Guide\n"), 0o644))
-	require.NoError(t, index.Save(rootDir, config, []domain.FileState{{RelPath: "docs/nested/guide.md", FileHash: "hash-guide", RecipeHash: "recipe", ChunkIDs: []string{"chunk-guide"}, ChunkCount: 1, LastIndexedAt: createdAt}, {RelPath: "docs/other.md", FileHash: "hash-other", RecipeHash: "recipe", ChunkIDs: []string{"chunk-other"}, ChunkCount: 1, LastIndexedAt: createdAt}}))
+	dataRoot := t.TempDir()
+	config := testStoreConfig(nestedRoot, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt)
+	require.NoError(t, os.MkdirAll(filepath.Join(nestedRoot, "deeper"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(nestedRoot, "deeper", "guide.md"), []byte("# Guide\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(nestedRoot, "outside.md"), []byte("# Outside\n"), 0o644))
+	persistIndexedCollection(t, config, []domain.FileState{{RelPath: "deeper/guide.md", FileHash: "hash-guide", RecipeHash: "recipe", ChunkIDs: []string{"chunk-guide"}, ChunkCount: 1, LastIndexedAt: createdAt}, {RelPath: "outside.md", FileHash: "hash-outside", RecipeHash: "recipe", ChunkIDs: []string{"chunk-outside"}, ChunkCount: 1, LastIndexedAt: createdAt}})
+	registerCollectionAt(t, dataRoot, rootDir)
+	registerCollectionAt(t, dataRoot, nestedRoot)
 
 	store, err := lancedb.New(config)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, store.Close()) })
 	require.NoError(t, store.Upsert(context.Background(), []domain.VectorRecord{
-		newVectorRecord("chunk-guide", "docs/nested/guide.md", []string{"go"}, []float32{1, 0, 0}, 0),
-		newVectorRecord("chunk-other", "docs/other.md", []string{"go"}, []float32{1, 0, 0}, 0),
+		newVectorRecord("chunk-guide", "deeper/guide.md", []string{"go"}, []float32{1, 0, 0}, 0),
+		newVectorRecord("chunk-outside", "outside.md", []string{"go"}, []float32{1, 0, 0}, 0),
 	}))
 
 	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
 		GetProvider: func(name string) (registry.ProviderFactory, error) {
 			require.Equal(t, ollama.Name, name)
 			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
@@ -130,17 +194,199 @@ func TestServiceRunFindsNearestVectorDBAndUsesRelativePathPrefix(t *testing.T) {
 		},
 	})
 
-	result, err := service.Run(context.Background(), Request{Text: "guide", Path: filepath.Join(rootDir, "docs", "nested"), MMRLambda: 1.0})
+	result, err := service.Run(context.Background(), Request{Text: "guide", Path: nestedRoot, MMRLambda: 1.0})
 	require.NoError(t, err)
-	require.Equal(t, rootDir, result.RootDir)
-	require.Equal(t, filepath.Join(rootDir, "docs", "nested"), result.PathRoot)
-	require.Len(t, result.Results, 1)
-	require.Equal(t, "docs/nested/guide.md", result.Results[0].Chunk.Metadata.RelPath)
+	require.Equal(t, nestedRoot, result.RootDir)
+	require.Equal(t, nestedRoot, result.PathRoot)
+	require.Len(t, result.Results, 2)
+	require.Equal(t, "deeper/guide.md", result.Results[0].Chunk.Metadata.RelPath)
+	require.Equal(t, "outside.md", result.Results[1].Chunk.Metadata.RelPath)
 
-	fileResult, err := service.Run(context.Background(), Request{Text: "guide", Path: filepath.Join(rootDir, "docs", "nested", "guide.md"), MMRLambda: 1.0})
+	dirResult, err := service.Run(context.Background(), Request{Text: "guide", Path: filepath.Join(nestedRoot, "deeper"), MMRLambda: 1.0})
+	require.NoError(t, err)
+	require.Len(t, dirResult.Results, 1)
+	require.Equal(t, "deeper/guide.md", dirResult.Results[0].Chunk.Metadata.RelPath)
+
+	fileResult, err := service.Run(context.Background(), Request{Text: "guide", Path: filepath.Join(nestedRoot, "deeper", "guide.md"), MMRLambda: 1.0})
 	require.NoError(t, err)
 	require.Len(t, fileResult.Results, 1)
-	require.Equal(t, "docs/nested/guide.md", fileResult.Results[0].Chunk.Metadata.RelPath)
+	require.Equal(t, "deeper/guide.md", fileResult.Results[0].Chunk.Metadata.RelPath)
+}
+
+func TestServiceRunSearchesAllCollectionsWhenPathOmitted(t *testing.T) {
+	t.Parallel()
+
+	dataRoot := t.TempDir()
+	workspace := t.TempDir()
+	firstRoot := filepath.Join(workspace, "first")
+	secondRoot := filepath.Join(workspace, "second")
+	require.NoError(t, os.MkdirAll(firstRoot, 0o755))
+	require.NoError(t, os.MkdirAll(secondRoot, 0o755))
+	createdAt := time.Date(2026, 4, 25, 8, 0, 0, 0, time.UTC)
+	firstConfig := testStoreConfig(firstRoot, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt)
+	secondConfig := testStoreConfig(secondRoot, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt)
+	persistIndexedCollection(t, firstConfig, nil)
+	persistIndexedCollection(t, secondConfig, nil)
+	registerCollectionAt(t, dataRoot, firstRoot)
+	registerCollectionAt(t, dataRoot, secondRoot)
+
+	stores := map[string]*recordingVectorStore{
+		firstConfig.CollectionID:  {results: []domain.SearchResult{newSearchResult("first-doc", "docs/first.md", 0.91)}},
+		secondConfig.CollectionID: {results: []domain.SearchResult{newSearchResult("second-doc", "notes/second.md", 0.97)}},
+	}
+	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
+		GetProvider: func(name string) (registry.ProviderFactory, error) {
+			require.Equal(t, ollama.Name, name)
+			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
+				return &fakeProvider{vector: []float32{1, 0, 0}}, nil
+			}, nil
+		},
+		GetVectorStore: func(name string) (registry.VectorStoreFactory, error) {
+			require.Equal(t, lancedb.Name, name)
+			return func(config domain.StoreConfig) (domain.VectorStore, error) {
+				store, ok := stores[config.CollectionID]
+				require.True(t, ok, "unexpected collection id %q", config.CollectionID)
+				return store, nil
+			}, nil
+		},
+	})
+
+	result, err := service.Run(context.Background(), Request{
+		Text:           "global",
+		Limit:          10,
+		ThresholdAlpha: -1,
+		ThresholdDelta: -1,
+		MMRLambda:      1.0,
+	})
+	require.NoError(t, err)
+	require.Empty(t, result.PathRoot)
+	require.Empty(t, result.RootDir)
+	require.Empty(t, result.Manifest.RootDir)
+	require.Empty(t, result.Manifest.CollectionID)
+	require.Equal(t, ollama.Name, result.Manifest.Provider)
+	require.Equal(t, ollama.DefaultModel, result.Manifest.Model)
+	require.Equal(t, 3, result.Manifest.VectorDim)
+	require.Equal(t, []string{"notes/second.md", "docs/first.md"}, []string{result.Results[0].Chunk.Metadata.RelPath, result.Results[1].Chunk.Metadata.RelPath})
+	require.Equal(t, []int{1, 2}, resultRanks(result.Results))
+
+	for _, store := range stores {
+		require.Len(t, store.searchQueries, 1)
+		require.Empty(t, store.searchQueries[0].PathPrefix)
+	}
+}
+
+func TestServiceRunSkipsStaleCollectionsWhenPathOmitted(t *testing.T) {
+	t.Parallel()
+
+	dataRoot := t.TempDir()
+	rootDir := t.TempDir()
+	createdAt := time.Date(2026, 4, 25, 8, 30, 0, 0, time.UTC)
+	config := testStoreConfig(rootDir, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt)
+	persistIndexedCollection(t, config, nil)
+	registerCollectionAt(t, dataRoot, rootDir)
+	require.NoError(t, os.RemoveAll(rootDir))
+
+	service := NewService(Dependencies{ResolveAppPaths: newTestAppPaths(t, dataRoot)})
+	_, err := service.Run(context.Background(), Request{Text: "global"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no usable indexed collections")
+	require.Contains(t, err.Error(), "jcemb embed <path> -r")
+}
+
+func TestServiceRunUsesConfiguredDataDirForGlobalStorageLookup(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	configuredDataRoot := filepath.Join(t.TempDir(), "configured-data-root")
+	defaultDataRoot := filepath.Join(t.TempDir(), "default-data-root")
+	createdAt := time.Date(2026, 4, 24, 9, 0, 0, 0, time.UTC)
+	config := testStoreConfig(rootDir, configuredDataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt)
+	persistIndexedCollection(t, config, nil)
+	require.NoError(t, index.SaveCollection(configuredDataRoot, index.CollectionEntry{RootDir: rootDir}))
+
+	loadTargets := make([]string, 0, 1)
+	storeConfigs := make([]domain.StoreConfig, 0, 1)
+	provider := &fakeProvider{vector: []float32{1, 0, 0}}
+	store := &recordingVectorStore{}
+	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, defaultDataRoot),
+		LoadIndex: func(root string) (index.Snapshot, error) {
+			loadTargets = append(loadTargets, root)
+			return index.Snapshot{Config: config}, nil
+		},
+		GetProvider: func(name string) (registry.ProviderFactory, error) {
+			require.Equal(t, ollama.Name, name)
+			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
+				return provider, nil
+			}, nil
+		},
+		GetVectorStore: func(name string) (registry.VectorStoreFactory, error) {
+			require.Equal(t, lancedb.Name, name)
+			return func(config domain.StoreConfig) (domain.VectorStore, error) {
+				storeConfigs = append(storeConfigs, config)
+				return store, nil
+			}, nil
+		},
+	})
+
+	_, err := service.Run(context.Background(), Request{Text: "lookup", Path: rootDir, DataDir: configuredDataRoot, MMRLambda: 1.0})
+	require.NoError(t, err)
+	require.Equal(t, []string{jcpaths.CollectionStorageDir(configuredDataRoot, config.CollectionID)}, loadTargets)
+	require.Len(t, storeConfigs, 1)
+	require.Equal(t, configuredDataRoot, storeConfigs[0].DataDir)
+	require.Equal(t, config.CollectionID, storeConfigs[0].CollectionID)
+	require.Equal(t, rootDir, storeConfigs[0].RootDir)
+	require.Equal(t, lancedb.Name, storeConfigs[0].Namespace)
+	_, err = os.Stat(jcpaths.CollectionStorageDir(defaultDataRoot, config.CollectionID))
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestServiceRunUsesStoredMetadataAfterGlobalDefaultsChange(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	dataRoot := t.TempDir()
+	createdAt := time.Date(2026, 4, 24, 10, 0, 0, 0, time.UTC)
+	config := testStoreConfig(rootDir, dataRoot, testStoredProviderName, "embedded-model", 3, createdAt)
+	persistIndexedCollection(t, config, nil)
+	registerCollectionAt(t, dataRoot, rootDir)
+
+	provider := &fakeProvider{vector: []float32{1, 0, 0}}
+	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
+		GetProvider: func(name string) (registry.ProviderFactory, error) {
+			require.Equal(t, testStoredProviderName, name)
+			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
+				require.Equal(t, testStoredProviderName, config.Name)
+				require.Nil(t, config.Options)
+				return provider, nil
+			}, nil
+		},
+		GetVectorStore: func(name string) (registry.VectorStoreFactory, error) {
+			require.Equal(t, lancedb.Name, name)
+			return func(config domain.StoreConfig) (domain.VectorStore, error) {
+				require.Equal(t, testStoredProviderName, config.Provider)
+				require.Equal(t, "embedded-model", config.Model)
+				require.Equal(t, 3, config.VectorDim)
+				return &recordingVectorStore{}, nil
+			}, nil
+		},
+	})
+
+	result, err := service.Run(context.Background(), Request{
+		Text:            "lookup",
+		Path:            rootDir,
+		Provider:        "new-default-provider",
+		ProviderOptions: map[string]string{"url": "http://new-default"},
+		MMRLambda:       1.0,
+	})
+	require.NoError(t, err)
+	require.Equal(t, testStoredProviderName, provider.model.Provider)
+	require.Equal(t, "embedded-model", provider.model.Name)
+	require.Equal(t, testStoredProviderName, result.Manifest.Provider)
+	require.Equal(t, "embedded-model", result.Manifest.Model)
+	require.Equal(t, 3, result.Manifest.VectorDim)
 }
 
 func TestServiceRunFailsClearlyWhenManifestProviderUnavailable(t *testing.T) {
@@ -148,18 +394,12 @@ func TestServiceRunFailsClearlyWhenManifestProviderUnavailable(t *testing.T) {
 
 	rootDir := t.TempDir()
 	createdAt := time.Date(2026, 4, 22, 15, 0, 0, 0, time.UTC)
-	require.NoError(t, os.MkdirAll(filepath.Join(rootDir, index.DirectoryName), 0o755))
-	require.NoError(t, index.Save(rootDir, domain.StoreConfig{
-		RootDir:   rootDir,
-		Provider:  "missing-provider",
-		Model:     "missing-model",
-		Splitter:  "markdown",
-		VectorDim: 3,
-		DBVersion: lancedb.DBVersion,
-		CreatedAt: createdAt,
-	}, []domain.FileState{}))
+	dataRoot := t.TempDir()
+	persistIndexedCollection(t, testStoreConfig(rootDir, dataRoot, "missing-provider", "missing-model", 3, createdAt), nil)
+	registerCollectionAt(t, dataRoot, rootDir)
 
 	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
 		GetProvider: func(name string) (registry.ProviderFactory, error) {
 			return nil, errors.New("unknown provider")
 		},
@@ -175,20 +415,14 @@ func TestServiceUsesSearchWindowWhenCallingStore(t *testing.T) {
 
 	rootDir := t.TempDir()
 	createdAt := time.Date(2026, 4, 23, 9, 0, 0, 0, time.UTC)
-	require.NoError(t, os.MkdirAll(filepath.Join(rootDir, index.DirectoryName), 0o755))
-	require.NoError(t, index.Save(rootDir, domain.StoreConfig{
-		RootDir:   rootDir,
-		Provider:  ollama.Name,
-		Model:     ollama.DefaultModel,
-		Splitter:  "markdown",
-		VectorDim: 3,
-		DBVersion: lancedb.DBVersion,
-		CreatedAt: createdAt,
-	}, []domain.FileState{}))
+	dataRoot := t.TempDir()
+	persistIndexedCollection(t, testStoreConfig(rootDir, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt), nil)
+	registerCollectionAt(t, dataRoot, rootDir)
 
 	provider := &fakeProvider{vector: []float32{1, 0, 0}}
 	store := &recordingVectorStore{}
 	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
 		GetProvider: func(name string) (registry.ProviderFactory, error) {
 			require.Equal(t, ollama.Name, name)
 			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
@@ -216,20 +450,14 @@ func TestServiceHonorsExplicitSearchWindow(t *testing.T) {
 
 	rootDir := t.TempDir()
 	createdAt := time.Date(2026, 4, 23, 12, 30, 0, 0, time.UTC)
-	require.NoError(t, os.MkdirAll(filepath.Join(rootDir, index.DirectoryName), 0o755))
-	require.NoError(t, index.Save(rootDir, domain.StoreConfig{
-		RootDir:   rootDir,
-		Provider:  ollama.Name,
-		Model:     ollama.DefaultModel,
-		Splitter:  "markdown",
-		VectorDim: 3,
-		DBVersion: lancedb.DBVersion,
-		CreatedAt: createdAt,
-	}, []domain.FileState{}))
+	dataRoot := t.TempDir()
+	persistIndexedCollection(t, testStoreConfig(rootDir, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt), nil)
+	registerCollectionAt(t, dataRoot, rootDir)
 
 	provider := &fakeProvider{vector: []float32{1, 0, 0}}
 	store := &recordingVectorStore{}
 	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
 		GetProvider: func(name string) (registry.ProviderFactory, error) {
 			require.Equal(t, ollama.Name, name)
 			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
@@ -263,20 +491,14 @@ func TestServiceSearchWindowBelowLimitClampedToLimit(t *testing.T) {
 
 	rootDir := t.TempDir()
 	createdAt := time.Date(2026, 4, 23, 12, 45, 0, 0, time.UTC)
-	require.NoError(t, os.MkdirAll(filepath.Join(rootDir, index.DirectoryName), 0o755))
-	require.NoError(t, index.Save(rootDir, domain.StoreConfig{
-		RootDir:   rootDir,
-		Provider:  ollama.Name,
-		Model:     ollama.DefaultModel,
-		Splitter:  "markdown",
-		VectorDim: 3,
-		DBVersion: lancedb.DBVersion,
-		CreatedAt: createdAt,
-	}, []domain.FileState{}))
+	dataRoot := t.TempDir()
+	persistIndexedCollection(t, testStoreConfig(rootDir, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt), nil)
+	registerCollectionAt(t, dataRoot, rootDir)
 
 	provider := &fakeProvider{vector: []float32{1, 0, 0}}
 	store := &recordingVectorStore{}
 	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
 		GetProvider: func(name string) (registry.ProviderFactory, error) {
 			require.Equal(t, ollama.Name, name)
 			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
@@ -352,16 +574,9 @@ func TestServiceAppliesThresholdBeforeDedup(t *testing.T) {
 
 	rootDir := t.TempDir()
 	createdAt := time.Date(2026, 4, 23, 11, 0, 0, 0, time.UTC)
-	require.NoError(t, os.MkdirAll(filepath.Join(rootDir, index.DirectoryName), 0o755))
-	require.NoError(t, index.Save(rootDir, domain.StoreConfig{
-		RootDir:   rootDir,
-		Provider:  ollama.Name,
-		Model:     ollama.DefaultModel,
-		Splitter:  "markdown",
-		VectorDim: 3,
-		DBVersion: lancedb.DBVersion,
-		CreatedAt: createdAt,
-	}, []domain.FileState{}))
+	dataRoot := t.TempDir()
+	persistIndexedCollection(t, testStoreConfig(rootDir, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt), nil)
+	registerCollectionAt(t, dataRoot, rootDir)
 
 	provider := &fakeProvider{vector: []float32{1, 0, 0}}
 	store := &recordingVectorStore{results: []domain.SearchResult{
@@ -371,6 +586,7 @@ func TestServiceAppliesThresholdBeforeDedup(t *testing.T) {
 		newSearchResult("chunk-low-c", "docs/high.md", 0.5),
 	}}
 	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
 		GetProvider: func(name string) (registry.ProviderFactory, error) {
 			require.Equal(t, ollama.Name, name)
 			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
@@ -397,16 +613,9 @@ func TestServiceThresholdDisabledWhenAlphaDeltaNegative(t *testing.T) {
 
 	rootDir := t.TempDir()
 	createdAt := time.Date(2026, 4, 23, 12, 0, 0, 0, time.UTC)
-	require.NoError(t, os.MkdirAll(filepath.Join(rootDir, index.DirectoryName), 0o755))
-	require.NoError(t, index.Save(rootDir, domain.StoreConfig{
-		RootDir:   rootDir,
-		Provider:  ollama.Name,
-		Model:     ollama.DefaultModel,
-		Splitter:  "markdown",
-		VectorDim: 3,
-		DBVersion: lancedb.DBVersion,
-		CreatedAt: createdAt,
-	}, []domain.FileState{}))
+	dataRoot := t.TempDir()
+	persistIndexedCollection(t, testStoreConfig(rootDir, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt), nil)
+	registerCollectionAt(t, dataRoot, rootDir)
 
 	provider := &fakeProvider{vector: []float32{1, 0, 0}}
 	store := &recordingVectorStore{results: []domain.SearchResult{
@@ -415,6 +624,7 @@ func TestServiceThresholdDisabledWhenAlphaDeltaNegative(t *testing.T) {
 		newSearchResult("chunk-3", "docs/c.md", 0.4),
 	}}
 	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
 		GetProvider: func(name string) (registry.ProviderFactory, error) {
 			require.Equal(t, ollama.Name, name)
 			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
@@ -447,16 +657,9 @@ func TestServiceTruncatesToUserLimitAfterDedup(t *testing.T) {
 
 	rootDir := t.TempDir()
 	createdAt := time.Date(2026, 4, 23, 10, 0, 0, 0, time.UTC)
-	require.NoError(t, os.MkdirAll(filepath.Join(rootDir, index.DirectoryName), 0o755))
-	require.NoError(t, index.Save(rootDir, domain.StoreConfig{
-		RootDir:   rootDir,
-		Provider:  ollama.Name,
-		Model:     ollama.DefaultModel,
-		Splitter:  "markdown",
-		VectorDim: 3,
-		DBVersion: lancedb.DBVersion,
-		CreatedAt: createdAt,
-	}, []domain.FileState{}))
+	dataRoot := t.TempDir()
+	persistIndexedCollection(t, testStoreConfig(rootDir, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt), nil)
+	registerCollectionAt(t, dataRoot, rootDir)
 
 	results := make([]domain.SearchResult, 0, 30)
 	for i := range 30 {
@@ -485,6 +688,7 @@ func TestServiceTruncatesToUserLimitAfterDedup(t *testing.T) {
 	provider := &fakeProvider{vector: []float32{1, 0, 0}}
 	store := &recordingVectorStore{results: results}
 	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
 		GetProvider: func(name string) (registry.ProviderFactory, error) {
 			require.Equal(t, ollama.Name, name)
 			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
@@ -517,16 +721,9 @@ func TestServiceAppliesMMRBeforeFinalLimit(t *testing.T) {
 
 	rootDir := t.TempDir()
 	createdAt := time.Date(2026, 4, 23, 13, 0, 0, 0, time.UTC)
-	require.NoError(t, os.MkdirAll(filepath.Join(rootDir, index.DirectoryName), 0o755))
-	require.NoError(t, index.Save(rootDir, domain.StoreConfig{
-		RootDir:   rootDir,
-		Provider:  ollama.Name,
-		Model:     ollama.DefaultModel,
-		Splitter:  "markdown",
-		VectorDim: 2,
-		DBVersion: lancedb.DBVersion,
-		CreatedAt: createdAt,
-	}, []domain.FileState{}))
+	dataRoot := t.TempDir()
+	persistIndexedCollection(t, testStoreConfig(rootDir, dataRoot, ollama.Name, ollama.DefaultModel, 2, createdAt), nil)
+	registerCollectionAt(t, dataRoot, rootDir)
 
 	provider := &fakeProvider{vector: []float32{1, 0.3}}
 	store := &recordingVectorStore{results: buildSearchResults(
@@ -538,6 +735,7 @@ func TestServiceAppliesMMRBeforeFinalLimit(t *testing.T) {
 		testResultSpec{id: "doc-d", relPath: "docs/d.md", score: 0.88, vector: []float32{0, -1}, chunkIndex: 0},
 	)}
 	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
 		GetProvider: func(name string) (registry.ProviderFactory, error) {
 			require.Equal(t, ollama.Name, name)
 			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
@@ -571,16 +769,9 @@ func TestServiceMMRDisabledWhenLambdaOne(t *testing.T) {
 
 	rootDir := t.TempDir()
 	createdAt := time.Date(2026, 4, 23, 14, 0, 0, 0, time.UTC)
-	require.NoError(t, os.MkdirAll(filepath.Join(rootDir, index.DirectoryName), 0o755))
-	require.NoError(t, index.Save(rootDir, domain.StoreConfig{
-		RootDir:   rootDir,
-		Provider:  ollama.Name,
-		Model:     ollama.DefaultModel,
-		Splitter:  "markdown",
-		VectorDim: 2,
-		DBVersion: lancedb.DBVersion,
-		CreatedAt: createdAt,
-	}, []domain.FileState{}))
+	dataRoot := t.TempDir()
+	persistIndexedCollection(t, testStoreConfig(rootDir, dataRoot, ollama.Name, ollama.DefaultModel, 2, createdAt), nil)
+	registerCollectionAt(t, dataRoot, rootDir)
 
 	provider := &fakeProvider{vector: []float32{1, 0}}
 	store := &recordingVectorStore{results: buildSearchResults(
@@ -589,6 +780,7 @@ func TestServiceMMRDisabledWhenLambdaOne(t *testing.T) {
 		testResultSpec{id: "score-c", relPath: "docs/c.md", score: 0.93, vector: []float32{-1, 0}},
 	)}
 	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
 		GetProvider: func(name string) (registry.ProviderFactory, error) {
 			require.Equal(t, ollama.Name, name)
 			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
@@ -746,6 +938,48 @@ func resultRanks(results []domain.SearchResult) []int {
 	return ranks
 }
 
+func newTestAppPaths(t *testing.T, dataRoot string) func() (jcpaths.AppPaths, error) {
+	t.Helper()
+	return func() (jcpaths.AppPaths, error) {
+		return jcpaths.AppPaths{DataRoot: dataRoot, ConfigFile: filepath.Join(t.TempDir(), "jcemb.json")}, nil
+	}
+}
+
+func registerCollectionAt(t *testing.T, dataRoot string, rootDir string) {
+	t.Helper()
+	require.NoError(t, index.SaveCollection(dataRoot, index.CollectionEntry{RootDir: rootDir}))
+}
+
+func persistIndexedCollection(t *testing.T, config domain.StoreConfig, files []domain.FileState) {
+	t.Helper()
+	require.NoError(t, index.Save(config.RootDir, config, files))
+	store, err := lancedb.New(config)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	require.NoError(t, store.Upsert(context.Background(), nil))
+	for _, file := range files {
+		require.NoError(t, store.PutFileState(context.Background(), file))
+	}
+}
+
+func testStoreConfig(rootDir string, dataRoot string, provider string, model string, vectorDim int, createdAt time.Time) domain.StoreConfig {
+	rootIdentity := jcpaths.NormalizeStoredPath(rootDir)
+	return domain.StoreConfig{
+		CollectionID: index.CollectionIDForRoot(rootIdentity),
+		RootIdentity: rootIdentity,
+		RootDir:      rootDir,
+		DataDir:      dataRoot,
+		Provider:     provider,
+		Model:        model,
+		Splitter:     "markdown",
+		VectorDim:    vectorDim,
+		DBVersion:    lancedb.DBVersion,
+		CreatedAt:    createdAt,
+	}
+}
+
+const testStoredProviderName = "stored-provider"
+
 type fakeProvider struct {
 	vector []float32
 	model  domain.ModelSpec
@@ -766,6 +1000,18 @@ func (s *recordingVectorStore) Upsert(_ context.Context, _ []domain.VectorRecord
 
 func (s *recordingVectorStore) DeleteBySource(_ context.Context, _ string) error {
 	return nil
+}
+
+func (s *recordingVectorStore) PutFileState(_ context.Context, _ domain.FileState) error {
+	return nil
+}
+
+func (s *recordingVectorStore) DeleteFileState(_ context.Context, _ string) error {
+	return nil
+}
+
+func (s *recordingVectorStore) Snapshot(_ context.Context) (domain.StoreConfig, []domain.FileState, error) {
+	return domain.StoreConfig{}, nil, nil
 }
 
 func (s *recordingVectorStore) Search(_ context.Context, query domain.SearchQuery) ([]domain.SearchResult, error) {
