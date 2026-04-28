@@ -11,5 +11,5 @@ func TestNewRootCmd(t *testing.T) {
 
 	require.NotNil(t, cmd)
 	require.Equal(t, "jcemb", cmd.Use)
-	require.Len(t, cmd.Commands(), 3)
+	require.Len(t, cmd.Commands(), 4)
 }

@@ -178,6 +178,14 @@ jcemb config
 This command allows you to configure the default embedding provider, model, and
 other settings. It requires an interactive terminal.
 
+### `version`
+
+Print the `jcemb` version.
+
+```bash
+jcemb version
+```
+
 ## Tags
 
 Tags are read only from YAML front matter:

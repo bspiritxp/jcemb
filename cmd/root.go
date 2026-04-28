@@ -14,7 +14,12 @@ func NewRootCmd() *cobra.Command {
 		Short: "A local-first Go CLI for Markdown vector search",
 	}
 
-	rootCmd.AddCommand(newEmbedCmd(bootstrap), newQueryCmd(bootstrap), newConfigCmd(bootstrap, app.RunConfigCommand))
+	rootCmd.AddCommand(
+		newEmbedCmd(bootstrap),
+		newQueryCmd(bootstrap),
+		newConfigCmd(bootstrap, app.RunConfigCommand),
+		NewVersionCmd(),
+	)
 
 	return rootCmd
 }

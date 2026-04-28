@@ -168,6 +168,14 @@ jcemb config
 
 该命令允许您配置默认的 embedding provider、model 以及其他设置。它需要一个交互式终端。
 
+### `version`
+
+输出 `jcemb` 版本号。
+
+```bash
+jcemb version
+```
+
 ## 标签
 
 标签只从 YAML front matter 中读取：
