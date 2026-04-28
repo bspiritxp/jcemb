@@ -7,11 +7,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNewEmbedCmd(t *testing.T) {
-	cmd := NewEmbedCmd()
+func TestNewScanCmd(t *testing.T) {
+	cmd := NewScanCmd()
 
 	require.NotNil(t, cmd)
-	require.Equal(t, "embed [path]", cmd.Use)
+	require.Equal(t, "scan [path]", cmd.Use)
 
 	flags := cmd.Flags()
 	require.NotNil(t, flags.Lookup("type"))
@@ -22,12 +22,12 @@ func TestNewEmbedCmd(t *testing.T) {
 	require.NotNil(t, flags.Lookup("force"))
 }
 
-func TestEmbedHelpShowsFlags(t *testing.T) {
+func TestScanHelpShowsFlags(t *testing.T) {
 	cmd := NewRootCmd()
 	buf := &bytes.Buffer{}
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
-	cmd.SetArgs([]string{"embed", "--help"})
+	cmd.SetArgs([]string{"scan", "--help"})
 
 	err := cmd.Execute()
 	require.NoError(t, err)

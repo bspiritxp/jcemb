@@ -87,7 +87,7 @@ func Embed(request EmbedRequest) error {
 		details = append(details, fmt.Sprintf("  - %s: %v", failure.RelPath, failure.Err))
 	}
 
-	return fmt.Errorf("embed: completed with %d file error(s)\n%s", result.Summary.Errors, strings.Join(details, "\n"))
+	return fmt.Errorf("scan: completed with %d file error(s)\n%s", result.Summary.Errors, strings.Join(details, "\n"))
 }
 
 func RunQuery(ctx context.Context, request QueryRequest) (QueryResult, error) {

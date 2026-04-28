@@ -11,8 +11,8 @@
 - 默认 embedding provider：Ollama。
 - 默认 embedding model：`bge-m3`。
 - 支持递归扫描目录。
-- 基于文件 hash 和 recipe hash 做增量向量化。
-- 下一次 embed 时自动清理已删除或重命名的文件。
+- 基于文件 hash 和 recipe hash 做增量扫描。
+- 下一次 scan 时自动清理已删除或重命名的文件。
 - 从 YAML front matter 中提取标签。
 - 标签过滤使用 AND 语义。
 - 支持文本输出和 JSON 输出。
@@ -88,7 +88,7 @@ go build -o jcemb.exe .
 递归向量化一个 Markdown 文档目录：
 
 ```bash
-jcemb embed /path/to/docs -r
+jcemb scan /path/to/docs -r
 ```
 
 查询已向量化的文档：
@@ -106,17 +106,17 @@ jcemb query "deployment checklist" --json
 强制完整重建：
 
 ```bash
-jcemb embed /path/to/docs -r --force
+jcemb scan /path/to/docs -r --force
 ```
 
 ## 命令
 
-### `embed`
+### `scan`
 
 将 Markdown 文件写入统一向量库。
 
 ```bash
-jcemb embed [path] [flags]
+jcemb scan [path] [flags]
 ```
 
 常用参数：
@@ -200,7 +200,7 @@ jcemb query "callback flow" --path /path/to/docs --tags architecture,gateway
 
 ## 工作原理
 
-1. `embed` 扫描 Markdown 文件，并跳过 `.git`、`node_modules` 等目录。
+1. `scan` 扫描 Markdown 文件，并跳过 `.git`、`node_modules` 等目录。
 2. 文档按 Markdown 结构切分为 chunks。
 3. 通过配置的 provider 和 model 生成 chunk 向量。
 4. 向量记录和版本化索引清单存储在统一的全局存储目录中。

@@ -8,7 +8,7 @@ A local-first Go CLI (`jcemb`) that embeds Markdown documents into a local vecto
 
 - Only `.md` files are supported.
 - Default provider: `ollama`, default model: `bge-m3`.
-- Output is stored under `<root>/.vectordb/` (JSON index + records file, not a real LanceDB server).
+- Output is stored in the configured global data directory (JSON index + records file, not a real LanceDB server).
 - Tags come **only** from YAML front matter.
 
 ## Build & run
@@ -17,8 +17,8 @@ A local-first Go CLI (`jcemb`) that embeds Markdown documents into a local vecto
 # Compile binary
 go build -o jcemb .
 
-# Embed a directory recursively
-./jcemb embed /path/to/docs -r
+# Scan a directory recursively
+./jcemb scan /path/to/docs -r
 
 # Query globally across indexed collections
 ./jcemb query "search text" -l 10
@@ -69,14 +69,14 @@ both package repositories.
 |---|---|
 | `main.go` | Minimal entrypoint; only calls `cmd.Execute()` |
 | `cmd/` | Cobra command layer: flag parsing, thin dispatch. No business logic. |
-| `internal/app/` | Service orchestration (`embed`, `query`) |
+| `internal/app/` | Service orchestration (`scan`, `query`) |
 | `internal/domain/` | Core contracts: `Document`, `Chunk`, `VectorStore`, `Embedder`, etc. |
 | `internal/registry/` | Self-registration factories for provider / splitter / vector store |
 | `internal/provider/ollama/` | Default embedding provider (HTTP to local Ollama) |
 | `internal/splitter/markdown/` | Markdown structural splitter (headings → chunks) |
 | `internal/storage/lancedb/` | Local vector store adapter (JSON file, not real LanceDB) |
 | `internal/index/` | Versioned atomic JSON index (`config.json` + `index.json`) |
-| `internal/fs/` | File discovery; skips `.vectordb`, `.git`, `node_modules` |
+| `internal/fs/` | File discovery; skips `.git`, `node_modules`, and common hidden tool directories by default |
 | `internal/metadata/` | YAML front matter extraction |
 | `internal/output/` | Text / JSON query result rendering |
 | `internal/testkit/` | Fake store, integration gate, test helpers |
@@ -98,8 +98,8 @@ func init() {
 
 ## Key conventions
 
-- **Incrementality**: embed skips unchanged files by comparing `file_hash + recipe_hash`. Use `--force` to rebuild all.
-- **Reconcile**: deleted/renamed files are cleaned from both index and vector store on the next embed.
+- **Incrementality**: scan skips unchanged files by comparing `file_hash + recipe_hash`. Use `--force` to rebuild all.
+- **Reconcile**: deleted/renamed files are cleaned from both index and vector store on the next scan.
 - **Tag filter**: `--tags a,b` means **AND** semantics (result must contain both tags).
 - **Path filter**: `query --path` accepts a file or directory and filters by the relative prefix; directory paths include descendants. Omit `--path` for global search across all indexed collections.
 - **Chunk ID stability**: derived from `rel_path + recipe_hash + chunk_index (+ section fingerprint)` so re-embeds are deterministic.
@@ -134,7 +134,7 @@ func init() {
 
 ## Gotchas
 
-- `query` does **not** accept `--provider` or `--model` overrides. It reads those from `.vectordb/config.json`.
+- `query` does **not** accept `--provider` or `--model` overrides. It reads those from the stored collection config.
 - `lancedb` here is a **local JSON-file adapter**, not the real LanceDB server/SDK.
 - Do not put business logic in `cmd/` or `main.go`; keep commands thin.
-- Scanner skips `.vectordb`, `.git`, and `node_modules` automatically.
+- Scanner skips `.git`, `node_modules`, and common hidden tool directories automatically when no `.gitignore` is present.

@@ -198,7 +198,7 @@ func NewService(deps Dependencies) *Service {
 }
 
 func (e *RunError) Error() string {
-	message := fmt.Sprintf("embed: completed with %d file error(s)", e.Result.Summary.Errors)
+	message := fmt.Sprintf("scan: completed with %d file error(s)", e.Result.Summary.Errors)
 	if len(e.Result.Failures) == 0 {
 		return message
 	}
@@ -305,7 +305,7 @@ func (s *Service) normalizeRequest(request Request) (Request, error) {
 		normalized.Type = s.deps.DefaultDocType
 	}
 	if normalized.Type != defaultType {
-		return Request{}, fmt.Errorf("embed: unsupported type %q", normalized.Type)
+		return Request{}, fmt.Errorf("scan: unsupported type %q", normalized.Type)
 	}
 	if strings.TrimSpace(normalized.DataDir) == "" {
 		paths, err := s.deps.ResolveAppPaths()
@@ -316,14 +316,14 @@ func (s *Service) normalizeRequest(request Request) (Request, error) {
 	}
 	expandedDataDir, err := jcpaths.ExpandUserHome(strings.TrimSpace(normalized.DataDir))
 	if err != nil {
-		return Request{}, fmt.Errorf("embed: resolve data dir: %w", err)
+		return Request{}, fmt.Errorf("scan: resolve data dir: %w", err)
 	}
 	normalized.DataDir = filepath.Clean(expandedDataDir)
 	if strings.TrimSpace(normalized.Provider) == "" {
-		return Request{}, fmt.Errorf("embed: provider is required")
+		return Request{}, fmt.Errorf("scan: provider is required")
 	}
 	if strings.TrimSpace(normalized.Model) == "" {
-		return Request{}, fmt.Errorf("embed: model is required")
+		return Request{}, fmt.Errorf("scan: model is required")
 	}
 	normalized.ProviderOptions = cloneStringMap(normalized.ProviderOptions)
 	if normalized.Concurrency < minimumWorkerConcurrency {
@@ -409,7 +409,7 @@ func (s *Service) preparePipelineState(rootDir string, request Request, recipe d
 
 	if state.rebuildRequired {
 		if err := s.deps.RemoveAll(filepath.Join(storageRoot, index.DirectoryName)); err != nil {
-			return nil, fmt.Errorf("embed: reset rebuild state: %w", err)
+			return nil, fmt.Errorf("scan: reset rebuild state: %w", err)
 		}
 		state.snapshot = index.Snapshot{}
 		state.hasSnapshot = false
@@ -558,7 +558,7 @@ func (s *Service) executeJob(ctx context.Context, job fileJob, recipe domain.Emb
 		for _, chunk := range chunks {
 			vector, ok := vectors[chunk.ID]
 			if !ok {
-				result.err = fmt.Errorf("embed: missing vector for chunk %s", chunk.ID)
+				result.err = fmt.Errorf("scan: missing vector for chunk %s", chunk.ID)
 				return result
 			}
 			records = append(records, domain.VectorRecord{Chunk: chunk, Vector: vector})
@@ -617,7 +617,7 @@ func (s *Service) commitFileResult(ctx context.Context, state *pipelineState, fi
 		}
 		if vectorDim != candidateDim {
 			delete(state.states, fileResult.relPath)
-			return fmt.Errorf("embed: vector dimension mismatch for %s: expected=%d actual=%d", fileResult.relPath, vectorDim, candidateDim)
+			return fmt.Errorf("scan: vector dimension mismatch for %s: expected=%d actual=%d", fileResult.relPath, vectorDim, candidateDim)
 		}
 	}
 	if err := s.ensureStore(ctx, state, vectorDim); err != nil {
@@ -705,7 +705,7 @@ func (s *Service) ensureStore(ctx context.Context, state *pipelineState, vectorD
 func resolveRootDir(inputPath string) (string, error) {
 	resolved, err := jcpaths.ResolveCollectionRoot(inputPath)
 	if err != nil {
-		return "", fmt.Errorf("embed: resolve path: %w", err)
+		return "", fmt.Errorf("scan: resolve path: %w", err)
 	}
 	return resolved.RootDir, nil
 }

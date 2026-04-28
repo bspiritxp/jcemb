@@ -401,7 +401,7 @@ func (s *Service) resolvePathQueryScopes(inputPath string, dataDir string) ([]qu
 				return nil, fmt.Errorf("query: inspect legacy local index: %w", legacyErr)
 			}
 			if legacyFound {
-				return nil, fmt.Errorf("query: legacy local index unsupported at %s; run jcemb embed %s to rebuild into unified storage", legacyDBPath, strings.TrimSpace(inputPath))
+				return nil, fmt.Errorf("query: legacy local index unsupported at %s; run jcemb scan %s to rebuild into unified storage", legacyDBPath, strings.TrimSpace(inputPath))
 			}
 			return nil, fmt.Errorf("query: path is not indexed: %s", strings.TrimSpace(inputPath))
 		}
@@ -451,7 +451,7 @@ func (s *Service) resolveGlobalQueryScopes(dataDir string) ([]queryScope, error)
 }
 
 func noIndexedCollectionsError(dataDir string) error {
-	return fmt.Errorf("query: no usable indexed collections in %s; run jcemb embed <path> -r first", dataDir)
+	return fmt.Errorf("query: no usable indexed collections in %s; run jcemb scan <path> -r first", dataDir)
 }
 
 func resultRootDir(scopes []queryScope) string {

@@ -51,7 +51,7 @@ func TestServiceRunFailsClearlyWhenLegacyLocalIndexExists(t *testing.T) {
 			_, err := service.Run(context.Background(), Request{Text: "hello", Path: tc.path})
 			require.Error(t, err)
 			require.Contains(t, err.Error(), "legacy local index unsupported")
-			require.Contains(t, err.Error(), "run jcemb embed")
+			require.Contains(t, err.Error(), "run jcemb scan")
 			require.Contains(t, err.Error(), tc.path)
 		})
 	}
@@ -293,7 +293,7 @@ func TestServiceRunSkipsStaleCollectionsWhenPathOmitted(t *testing.T) {
 	_, err := service.Run(context.Background(), Request{Text: "global"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no usable indexed collections")
-	require.Contains(t, err.Error(), "jcemb embed <path> -r")
+	require.Contains(t, err.Error(), "jcemb scan <path> -r")
 }
 
 func TestServiceRunUsesConfiguredDataDirForGlobalStorageLookup(t *testing.T) {

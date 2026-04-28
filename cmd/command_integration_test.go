@@ -31,14 +31,14 @@ var (
 	fixtureProviderTracker      = &testProviderTracker{}
 )
 
-func TestEmbedAndQueryCommandsEndToEndWithOfflineFixtureProvider(t *testing.T) {
+func TestScanAndQueryCommandsEndToEndWithOfflineFixtureProvider(t *testing.T) {
 	registerFixtureProvider(t)
 	fixtureProviderTracker.Reset()
 	setCommandTestHome(t)
 
 	rootDir := copyFixtureTree(t, "basic")
 
-	_, _, err := executeRootCommand(t, []string{"embed", rootDir, "--provider", testProviderName, "--model", testModelName, "--recursive"})
+	_, _, err := executeRootCommand(t, []string{"scan", rootDir, "--provider", testProviderName, "--model", testModelName, "--recursive"})
 	require.NoError(t, err)
 	require.Greater(t, fixtureProviderTracker.CallCount(), 0)
 	dataRoot := config.DefaultSettings().DataDir
@@ -77,27 +77,27 @@ func TestEmbedAndQueryCommandsEndToEndWithOfflineFixtureProvider(t *testing.T) {
 	require.Equal(t, filepath.ToSlash(filepath.Join(rootDir, "docs", "plain.md")), envelope.Results[0].RelPath)
 }
 
-func TestEmbedCommandSupportsIncrementalSkipAndForce(t *testing.T) {
+func TestScanCommandSupportsIncrementalSkipAndForce(t *testing.T) {
 	registerFixtureProvider(t)
 	fixtureProviderTracker.Reset()
 
 	rootDir := copyFixtureTree(t, "basic")
 
-	_, _, err := executeRootCommand(t, []string{"embed", rootDir, "--provider", testProviderName, "--model", testModelName, "--recursive"})
+	_, _, err := executeRootCommand(t, []string{"scan", rootDir, "--provider", testProviderName, "--model", testModelName, "--recursive"})
 	require.NoError(t, err)
 	firstCalls := fixtureProviderTracker.CallCount()
 	require.Greater(t, firstCalls, 0)
 
-	_, _, err = executeRootCommand(t, []string{"embed", rootDir, "--provider", testProviderName, "--model", testModelName, "--recursive"})
+	_, _, err = executeRootCommand(t, []string{"scan", rootDir, "--provider", testProviderName, "--model", testModelName, "--recursive"})
 	require.NoError(t, err)
 	require.Equal(t, firstCalls, fixtureProviderTracker.CallCount())
 
-	_, _, err = executeRootCommand(t, []string{"embed", rootDir, "--provider", testProviderName, "--model", testModelName, "--recursive", "--force"})
+	_, _, err = executeRootCommand(t, []string{"scan", rootDir, "--provider", testProviderName, "--model", testModelName, "--recursive", "--force"})
 	require.NoError(t, err)
 	require.Greater(t, fixtureProviderTracker.CallCount(), firstCalls)
 }
 
-func TestEmbedCommandSyncsDeletedAndRenamedFiles(t *testing.T) {
+func TestScanCommandSyncsDeletedAndRenamedFiles(t *testing.T) {
 	registerFixtureProvider(t)
 	fixtureProviderTracker.Reset()
 
@@ -105,7 +105,7 @@ func TestEmbedCommandSyncsDeletedAndRenamedFiles(t *testing.T) {
 	require.NoError(t, os.Rename(filepath.Join(rootDir, "docs", "plain.md"), filepath.Join(rootDir, "docs", "renamed-note.md")))
 	require.NoError(t, os.Remove(filepath.Join(rootDir, "docs", "delete-me.md")))
 
-	_, _, err := executeRootCommand(t, []string{"embed", rootDir, "--provider", testProviderName, "--model", testModelName, "--recursive"})
+	_, _, err := executeRootCommand(t, []string{"scan", rootDir, "--provider", testProviderName, "--model", testModelName, "--recursive"})
 	require.NoError(t, err)
 
 	snapshot, err := index.Load(rootDir)
@@ -122,7 +122,7 @@ func TestEmbedCommandSyncsDeletedAndRenamedFiles(t *testing.T) {
 	require.NotContains(t, jsonOutput, filepath.ToSlash(filepath.Join(rootDir, "docs", "delete-me.md")))
 }
 
-func TestEmbedCommandUsesPersistedConfigDefaultsAndCLIOverridesThem(t *testing.T) {
+func TestScanCommandUsesPersistedConfigDefaultsAndCLIOverridesThem(t *testing.T) {
 	registerFixtureProvider(t)
 	fixtureProviderTracker.Reset()
 	setCommandTestHome(t)
@@ -143,7 +143,7 @@ func TestEmbedCommandUsesPersistedConfigDefaultsAndCLIOverridesThem(t *testing.T
 	configuredDataRoot := runtime.Settings.DataDir
 
 	firstRoot := copyFixtureTree(t, "basic")
-	_, _, err = executeRootCommand(t, []string{"embed", firstRoot, "--recursive"})
+	_, _, err = executeRootCommand(t, []string{"scan", firstRoot, "--recursive"})
 	require.NoError(t, err)
 	require.NoDirExists(t, filepath.Join(firstRoot, index.DirectoryName))
 	require.FileExists(t, filepath.Join(collectionDataDir(firstRoot, configuredDataRoot), index.DirectoryName, "lancedb.records.json"))
@@ -154,7 +154,7 @@ func TestEmbedCommandUsesPersistedConfigDefaultsAndCLIOverridesThem(t *testing.T
 	require.Equal(t, "config-default-model", firstSnapshot.Config.Model)
 
 	secondRoot := copyFixtureTree(t, "basic")
-	_, _, err = executeRootCommand(t, []string{"embed", secondRoot, "--recursive", "--model", "flag-model"})
+	_, _, err = executeRootCommand(t, []string{"scan", secondRoot, "--recursive", "--model", "flag-model"})
 	require.NoError(t, err)
 	require.NoDirExists(t, filepath.Join(secondRoot, index.DirectoryName))
 	require.FileExists(t, filepath.Join(collectionDataDir(secondRoot, configuredDataRoot), index.DirectoryName, "lancedb.records.json"))
@@ -165,13 +165,13 @@ func TestEmbedCommandUsesPersistedConfigDefaultsAndCLIOverridesThem(t *testing.T
 	require.Equal(t, "flag-model", secondSnapshot.Config.Model)
 }
 
-func TestEmbedCommandReturnsRunErrorForInvalidYAMLFixture(t *testing.T) {
+func TestScanCommandReturnsRunErrorForInvalidYAMLFixture(t *testing.T) {
 	registerFixtureProvider(t)
 	fixtureProviderTracker.Reset()
 
 	rootDir := copyFixtureTree(t, "invalid")
 
-	_, _, err := executeRootCommand(t, []string{"embed", rootDir, "--provider", testProviderName, "--model", testModelName, "--recursive"})
+	_, _, err := executeRootCommand(t, []string{"scan", rootDir, "--provider", testProviderName, "--model", testModelName, "--recursive"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "completed with 1 file error(s)")
 	require.Contains(t, err.Error(), "docs/bad.md")
@@ -199,11 +199,11 @@ func TestQueryCommandSupportsSubdirectoryAndFilePathScopes(t *testing.T) {
 	setCommandTestHome(t)
 
 	rootDir := copyFixtureTree(t, "basic")
-	_, _, err := executeRootCommand(t, []string{"embed", rootDir, "--provider", testProviderName, "--model", testModelName, "--recursive"})
+	_, _, err := executeRootCommand(t, []string{"scan", rootDir, "--provider", testProviderName, "--model", testModelName, "--recursive"})
 	require.NoError(t, err)
 	secondRoot := copyFixtureTree(t, "basic")
 	require.NoError(t, os.WriteFile(filepath.Join(secondRoot, "docs", "global-only.md"), []byte("# Global Only\n\ngo vector go vector global-only\n"), 0o644))
-	_, _, err = executeRootCommand(t, []string{"embed", secondRoot, "--provider", testProviderName, "--model", testModelName, "--recursive"})
+	_, _, err = executeRootCommand(t, []string{"scan", secondRoot, "--provider", testProviderName, "--model", testModelName, "--recursive"})
 	require.NoError(t, err)
 
 	globalOutput, _, err := executeRootCommand(t, []string{"query", "go vector", "--json", "--threshold-alpha", "-1", "--threshold-delta", "-1", "--mmr-lambda", "1.0"})
@@ -269,7 +269,7 @@ func TestQueryCommandUsesStoredMetadataAfterDefaultsChange(t *testing.T) {
 	}))
 
 	rootDir := copyFixtureTree(t, "basic")
-	_, _, err := executeRootCommand(t, []string{"embed", rootDir, "--provider", testProviderName, "--model", "embedded-model", "--recursive"})
+	_, _, err := executeRootCommand(t, []string{"scan", rootDir, "--provider", testProviderName, "--model", "embedded-model", "--recursive"})
 	require.NoError(t, err)
 	require.FileExists(t, filepath.Join(collectionDataDir(rootDir, configuredDataRoot), index.DirectoryName, "lancedb.records.json"))
 

@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type EmbedOptions struct {
+type ScanOptions struct {
 	Type        string
 	Concurrency int
 	Provider    string
@@ -16,13 +16,13 @@ type EmbedOptions struct {
 	Force       bool
 }
 
-func NewEmbedCmd() *cobra.Command {
-	return newEmbedCmd(app.NewBootstrap())
+func NewScanCmd() *cobra.Command {
+	return newScanCmd(app.NewBootstrap())
 }
 
-func newEmbedCmd(bootstrap app.Bootstrap) *cobra.Command {
+func newScanCmd(bootstrap app.Bootstrap) *cobra.Command {
 	defaults := config.Defaults()
-	options := EmbedOptions{
+	options := ScanOptions{
 		Type:        "md",
 		Concurrency: 2,
 		Provider:    bootstrap.Config.Settings.Provider,
@@ -30,8 +30,8 @@ func newEmbedCmd(bootstrap app.Bootstrap) *cobra.Command {
 	}
 
 	cmd := &cobra.Command{
-		Use:   "embed [path]",
-		Short: "Embed Markdown files into the unified vector store",
+		Use:   "scan [path]",
+		Short: "Scan Markdown files into the unified vector store",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := bootstrap.Validate(); err != nil {
@@ -66,12 +66,12 @@ func newEmbedCmd(bootstrap app.Bootstrap) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&options.Type, "type", "t", options.Type, "document type to embed")
+	cmd.Flags().StringVarP(&options.Type, "type", "t", options.Type, "document type to scan")
 	cmd.Flags().IntVarP(&options.Concurrency, "concurccy", "c", options.Concurrency, "number of concurrent workers")
 	cmd.Flags().StringVarP(&options.Provider, "provider", "p", options.Provider, "embedding provider")
 	cmd.Flags().StringVarP(&options.Model, "model", "m", options.Model, "embedding model")
 	cmd.Flags().BoolVarP(&options.Recursive, "recursive", "r", options.Recursive, "scan subdirectories recursively")
-	cmd.Flags().BoolVar(&options.Force, "force", options.Force, "force re-embed all documents")
+	cmd.Flags().BoolVar(&options.Force, "force", options.Force, "force rescan all documents")
 
 	return cmd
 }

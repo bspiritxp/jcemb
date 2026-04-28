@@ -15,9 +15,9 @@ without running a separate vector database service.
 - Unified global storage for configuration and vector data.
 - Default embedding provider: Ollama.
 - Default embedding model: `bge-m3`.
-- Recursive directory embedding.
-- Incremental re-embedding based on file and recipe hashes.
-- Cleanup of deleted or renamed files on the next embed.
+- Recursive directory scanning.
+- Incremental rescanning based on file and recipe hashes.
+- Cleanup of deleted or renamed files on the next scan.
 - YAML front matter tag extraction.
 - Tag filtering with AND semantics.
 - Text and JSON query output.
@@ -92,10 +92,10 @@ Run the local binary:
 
 ## Quick Start
 
-Embed a directory of Markdown files:
+Scan a directory of Markdown files:
 
 ```bash
-jcemb embed /path/to/docs -r
+jcemb scan /path/to/docs -r
 ```
 
 Query the embedded documents:
@@ -113,17 +113,17 @@ jcemb query "deployment checklist" --json
 Force a full rebuild:
 
 ```bash
-jcemb embed /path/to/docs -r --force
+jcemb scan /path/to/docs -r --force
 ```
 
 ## Commands
 
-### `embed`
+### `scan`
 
-Embed Markdown files into the unified vector store.
+Scan Markdown files into the unified vector store.
 
 ```bash
-jcemb embed [path] [flags]
+jcemb scan [path] [flags]
 ```
 
 Common flags:
@@ -134,7 +134,7 @@ Common flags:
 | `-p, --provider` | Embedding provider. Default: from config. |
 | `-m, --model` | Embedding model. Default: from config. |
 | `-c, --concurccy` | Number of concurrent workers. |
-| `--force` | Re-embed all documents even if unchanged. |
+| `--force` | Rescan all documents even if unchanged. |
 | `-t, --type` | Document type. Currently only `md` is supported. |
 
 The vector data and manifests are stored in a unified global directory (e.g., `~/.local/share/jcemb` on Linux).
@@ -210,7 +210,7 @@ All requested tags must be present on the matched document.
 
 ## How It Works
 
-1. `embed` scans Markdown files and skips ignored directories such as
+1. `scan` scans Markdown files and skips ignored directories such as
    `.git` and `node_modules`.
 2. Documents are split by Markdown structure.
 3. Chunks are embedded through the configured provider and model.
@@ -221,7 +221,7 @@ All requested tags must be present on the matched document.
    MMR, and then rendered as text or JSON.
 
 Legacy `.vectordb` directories are no longer created. If a legacy `.vectordb` is
-detected during a query, `jcemb` will guide you to re-embed the path into the
+detected during a query, `jcemb` will guide you to rescan the path into the
 unified storage.
 
 ## Development
