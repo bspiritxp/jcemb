@@ -42,6 +42,27 @@ go test -tags=integration ./...
 
 Integration tests are gated by both **build tag** (`//go:build integration`) and **env var** (`INTEGRATION=1`). See `internal/testkit/integration_gate_test.go`.
 
+## Release workflow
+
+GitHub Actions builds release archives automatically when a version tag is
+pushed:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow publishes macOS, Linux, and Windows binaries for `amd64`
+and `arm64`, plus a `SHA256SUMS` file.
+
+It also updates package manager repositories:
+
+- Homebrew tap: `bspiritxp/homebrew-tap`
+- Scoop bucket: `bspiritxp/scoop-bucket`
+
+The workflow needs a `PACKAGE_REPO_TOKEN` repository secret with write access to
+both package repositories.
+
 ## Architecture
 
 | Package | Responsibility |
@@ -117,19 +138,3 @@ func init() {
 - `lancedb` here is a **local JSON-file adapter**, not the real LanceDB server/SDK.
 - Do not put business logic in `cmd/` or `main.go`; keep commands thin.
 - Scanner skips `.vectordb`, `.git`, and `node_modules` automatically.
-
-## Extending
-
-Providers, splitters, and vector stores are registered through package
-initializers:
-
-```go
-import "github.com/bspiritxp/jcemb/internal/registry"
-
-func init() {
-    registry.MustRegisterProvider("myprovider", factory)
-}
-```
-
-Duplicate registrations panic by design. Tests can reset registries with the
-corresponding reset helpers in `internal/registry`.

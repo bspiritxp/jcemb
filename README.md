@@ -42,6 +42,20 @@ needed.
 
 ## Installation
 
+### Install with Homebrew
+
+```bash
+brew tap bspiritxp/tap
+brew install jcemb
+```
+
+### Install with Scoop
+
+```powershell
+scoop bucket add bspiritxp https://github.com/bspiritxp/scoop-bucket
+scoop install jcemb
+```
+
 ### Install with Go
 
 ```bash

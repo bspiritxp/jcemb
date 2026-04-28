@@ -36,6 +36,20 @@ ollama serve
 
 ## 安装
 
+### 使用 Homebrew 安装
+
+```bash
+brew tap bspiritxp/tap
+brew install jcemb
+```
+
+### 使用 Scoop 安装
+
+```powershell
+scoop bucket add bspiritxp https://github.com/bspiritxp/scoop-bucket
+scoop install jcemb
+```
+
 ### 使用 Go 安装
 
 ```bash

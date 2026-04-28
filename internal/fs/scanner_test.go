@@ -18,15 +18,22 @@ func TestScanMarkdownRecursiveRespectsIgnoredDirectories(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(root, ".git", "ignored.md"), []byte("# ignored"), 0o644))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, ".vectordb"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(root, ".vectordb", "ignored.md"), []byte("# ignored"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".vectordb", "legacy.md"), []byte("# legacy"), 0o644))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "node_modules", "pkg"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "node_modules", "pkg", "ignored.md"), []byte("# ignored"), 0o644))
 
 	files, err := ScanMarkdown(ScanOptions{RootPath: filepath.Join(root, "."), Recursive: true})
 	require.NoError(t, err)
-	require.Len(t, files, 2)
+	require.Len(t, files, 3)
 
 	require.Equal(t, []File{
+		{
+			RootDir:  filepath.ToSlash(filepath.Clean(root)),
+			FilePath: filepath.ToSlash(filepath.Join(root, ".vectordb", "legacy.md")),
+			RelPath:  filepath.ToSlash(filepath.Join(root, ".vectordb", "legacy.md")),
+			FileName: "legacy.md",
+			DocType:  "md",
+		},
 		{
 			RootDir:  filepath.ToSlash(filepath.Clean(root)),
 			FilePath: filepath.ToSlash(filepath.Join(root, "docs", "nested", "guide.md")),
@@ -56,9 +63,17 @@ func TestScanMarkdownRecursiveRespectsIgnoredDirectories(t *testing.T) {
 			FileName: files[1].FileName,
 			DocType:  files[1].DocType,
 		},
+		{
+			RootDir:  files[2].RootDir,
+			FilePath: files[2].FilePath,
+			RelPath:  files[2].RelPath,
+			FileName: files[2].FileName,
+			DocType:  files[2].DocType,
+		},
 	})
 	require.False(t, files[0].ModTime.IsZero())
 	require.False(t, files[1].ModTime.IsZero())
+	require.False(t, files[2].ModTime.IsZero())
 }
 
 func TestScanMarkdownNonRecursiveOnlyReadsTopLevelMarkdown(t *testing.T) {
@@ -88,4 +103,101 @@ func TestScanMarkdownSupportsSingleFileRoots(t *testing.T) {
 	require.Equal(t, filepath.ToSlash(filepath.Clean(filePath)), files[0].RelPath)
 	require.Equal(t, filepath.ToSlash(filepath.Clean(filePath)), files[0].FilePath)
 	require.False(t, files[0].ModTime.IsZero())
+}
+
+func TestScanMarkdownGitIgnoreFiltersFilesAndDirectories(t *testing.T) {
+	root := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(root, "keep.md"), []byte("# keep"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "draft.md"), []byte("# draft"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "build"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "build", "out.md"), []byte("# out"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "docs"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "docs", "guide.md"), []byte("# guide"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "node_modules", "pkg"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "node_modules", "pkg", "kept.md"), []byte("# kept"), 0o644))
+
+	gitignore := "draft.md\nbuild/\n"
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".gitignore"), []byte(gitignore), 0o644))
+
+	files, err := ScanMarkdown(ScanOptions{RootPath: root, Recursive: true})
+	require.NoError(t, err)
+
+	relPaths := make([]string, 0, len(files))
+	for _, f := range files {
+		relPaths = append(relPaths, f.RelPath)
+	}
+
+	require.ElementsMatch(t, []string{
+		filepath.ToSlash(filepath.Join(root, "docs", "guide.md")),
+		filepath.ToSlash(filepath.Join(root, "keep.md")),
+		filepath.ToSlash(filepath.Join(root, "node_modules", "pkg", "kept.md")),
+	}, relPaths)
+}
+
+func TestScanMarkdownGitIgnoreSupportsNegation(t *testing.T) {
+	root := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "docs"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "docs", "drop.md"), []byte("# drop"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "docs", "keep.md"), []byte("# keep"), 0o644))
+
+	gitignore := "docs/*.md\n!docs/keep.md\n"
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".gitignore"), []byte(gitignore), 0o644))
+
+	files, err := ScanMarkdown(ScanOptions{RootPath: root, Recursive: true})
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	require.Equal(t, filepath.ToSlash(filepath.Join(root, "docs", "keep.md")), files[0].RelPath)
+}
+
+func TestScanMarkdownGitIgnoreDoesNotSpecialCaseLegacyVectorDB(t *testing.T) {
+	root := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(root, "root.md"), []byte("# root"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".vectordb"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".vectordb", "leak.md"), []byte("# leak"), 0o644))
+
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".gitignore"), []byte("# empty\n"), 0o644))
+
+	files, err := ScanMarkdown(ScanOptions{RootPath: root, Recursive: true})
+	require.NoError(t, err)
+	require.Len(t, files, 2)
+	require.Equal(t, filepath.ToSlash(filepath.Join(root, ".vectordb", "leak.md")), files[0].RelPath)
+	require.Equal(t, filepath.ToSlash(filepath.Join(root, "root.md")), files[1].RelPath)
+}
+
+func TestScanMarkdownGitIgnoreDoesNotApplyToSingleFileRoot(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "draft.md")
+	require.NoError(t, os.WriteFile(filePath, []byte("# draft"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".gitignore"), []byte("draft.md\n"), 0o644))
+
+	files, err := ScanMarkdown(ScanOptions{RootPath: filePath, Recursive: true})
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	require.Equal(t, filepath.ToSlash(filePath), files[0].RelPath)
+}
+
+func TestScanMarkdownWithoutGitIgnoreUsesDefaultIgnoreList(t *testing.T) {
+	root := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(root, "root.md"), []byte("# root"), 0o644))
+	for _, dir := range []string{
+		".claude",
+		".codex",
+		".git",
+		".idea",
+		".obsidian",
+		".vscode",
+		filepath.Join("node_modules", "pkg"),
+	} {
+		require.NoError(t, os.MkdirAll(filepath.Join(root, dir), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(root, dir, "ignored.md"), []byte("# ignored"), 0o644))
+	}
+
+	files, err := ScanMarkdown(ScanOptions{RootPath: root, Recursive: true})
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	require.Equal(t, filepath.ToSlash(filepath.Join(root, "root.md")), files[0].RelPath)
 }
