@@ -32,7 +32,7 @@ func TestScanHelpShowsFlags(t *testing.T) {
 	err := cmd.Execute()
 	require.NoError(t, err)
 	output := buf.String()
-	require.Contains(t, output, "--type")
+	require.NotContains(t, output, "--type")
 	require.Contains(t, output, "--concurccy")
 	require.Contains(t, output, "--provider")
 	require.Contains(t, output, "--model")

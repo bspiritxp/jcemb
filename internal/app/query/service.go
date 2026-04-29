@@ -12,7 +12,9 @@ import (
 	"github.com/bspiritxp/jcemb/internal/index"
 	jcpaths "github.com/bspiritxp/jcemb/internal/paths"
 	_ "github.com/bspiritxp/jcemb/internal/provider/ollama"
+	_ "github.com/bspiritxp/jcemb/internal/provider/openai"
 	"github.com/bspiritxp/jcemb/internal/registry"
+	"github.com/bspiritxp/jcemb/internal/scanprovider/image"
 	"github.com/bspiritxp/jcemb/internal/storage/lancedb"
 	_ "github.com/bspiritxp/jcemb/internal/storage/lancedb"
 )
@@ -26,6 +28,7 @@ const (
 	defaultRecipeType             = "query"
 	defaultRecipeVersion          = "v1"
 	defaultVectorStoreName        = lancedb.Name
+	defaultFileType               = "markdown"
 	queryChunkID                  = "query"
 )
 
@@ -37,6 +40,7 @@ type Request struct {
 	DataDir         string
 	Provider        string
 	ProviderOptions map[string]string
+	FileType        string
 	Unique          bool
 	Full            bool
 	ThresholdAlpha  float64
@@ -69,7 +73,7 @@ type Dependencies struct {
 	LoadIndex         func(rootDir string) (index.Snapshot, error)
 	LoadCollections   func(dataRoot string) (index.CollectionRegistry, error)
 	ResolveAppPaths   func() (jcpaths.AppPaths, error)
-	ResolveCollection func(dataRoot string, inputPath string) (index.CollectionMatch, error)
+	ResolveCollection func(dataRoot string, inputPath string, fileType string) (index.CollectionMatch, error)
 	GetProvider       func(name string) (registry.ProviderFactory, error)
 	GetVectorStore    func(name string) (registry.VectorStoreFactory, error)
 	Stat              func(name string) (os.FileInfo, error)
@@ -91,7 +95,7 @@ func NewService(deps Dependencies) *Service {
 		deps.ResolveAppPaths = jcpaths.ResolveAppPaths
 	}
 	if deps.ResolveCollection == nil {
-		deps.ResolveCollection = index.ResolveCollection
+		deps.ResolveCollection = index.ResolveCollectionForFileType
 	}
 	if deps.GetProvider == nil {
 		deps.GetProvider = registry.GetProvider
@@ -118,7 +122,7 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 		return Result{}, err
 	}
 
-	scopes, err := s.resolveQueryScopes(normalized.Path, normalized.DataDir)
+	scopes, err := s.resolveQueryScopes(normalized.Path, normalized.DataDir, normalized.FileType)
 	if err != nil {
 		return Result{}, err
 	}
@@ -191,6 +195,10 @@ func normalizeRequest(request Request) (Request, error) {
 	}
 	normalized.Provider = strings.TrimSpace(normalized.Provider)
 	normalized.ProviderOptions = cloneStringMap(normalized.ProviderOptions)
+	normalized.FileType = normalizeFileType(normalized.FileType)
+	if normalized.FileType == "" {
+		normalized.FileType = defaultFileType
+	}
 	return normalized, nil
 }
 
@@ -239,6 +247,9 @@ func applyDynamicThreshold(results []domain.SearchResult, alpha, delta float64) 
 }
 
 func validateManifest(config domain.StoreConfig) error {
+	if normalizeFileType(config.FileType) == "" {
+		config.FileType = defaultFileType
+	}
 	if strings.TrimSpace(config.Provider) == "" {
 		return fmt.Errorf("query: manifest provider is required")
 	}
@@ -255,6 +266,9 @@ func validateManifest(config domain.StoreConfig) error {
 }
 
 func (s *Service) embedQuery(ctx context.Context, config domain.StoreConfig, request Request) ([]float32, error) {
+	if normalizeFileType(config.FileType) == "image" || normalizeFileType(request.FileType) == "image" {
+		return s.embedImageQuery(ctx, config, request)
+	}
 	providerFactory, err := s.deps.GetProvider(config.Provider)
 	if err != nil {
 		return nil, fmt.Errorf("query: provider %q is not available: %w", config.Provider, err)
@@ -303,6 +317,21 @@ func (s *Service) embedQuery(ctx context.Context, config domain.StoreConfig, req
 	return vector, nil
 }
 
+func (s *Service) embedImageQuery(ctx context.Context, config domain.StoreConfig, request Request) ([]float32, error) {
+	imagePath := false
+	if info, err := s.deps.Stat(request.Text); err == nil && !info.IsDir() && image.SupportedExtension(filepath.Ext(request.Text)) {
+		imagePath = true
+	}
+	vector, err := image.EmbedQuery(ctx, config, request.ProviderOptions, request.Text, imagePath)
+	if err != nil {
+		return nil, err
+	}
+	if len(vector) != config.VectorDim {
+		return nil, fmt.Errorf("query: provider vector dimension mismatch: expected=%d actual=%d", config.VectorDim, len(vector))
+	}
+	return vector, nil
+}
+
 func cloneStringMap(values map[string]string) map[string]string {
 	if len(values) == 0 {
 		return nil
@@ -312,6 +341,17 @@ func cloneStringMap(values map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func normalizeFileType(fileType string) string {
+	trimmed := strings.TrimSpace(fileType)
+	if trimmed == "" {
+		return ""
+	}
+	if trimmed == "md" {
+		return "markdown"
+	}
+	return trimmed
 }
 
 func (s *Service) searchScope(ctx context.Context, scope queryScope, request Request) (index.Snapshot, []float32, []domain.SearchResult, error) {
@@ -330,6 +370,10 @@ func (s *Service) searchScope(ctx context.Context, scope queryScope, request Req
 	snapshot.Config.RootIdentity = scope.RootIdentity
 	snapshot.Config.CollectionID = scope.CollectionID
 	snapshot.Config.DataDir = scope.DataDir
+	snapshot.Config.FileType = normalizeFileType(snapshot.Config.FileType)
+	if snapshot.Config.FileType == "" {
+		snapshot.Config.FileType = defaultFileType
+	}
 	if err := validateManifest(snapshot.Config); err != nil {
 		return index.Snapshot{}, nil, nil, err
 	}
@@ -350,7 +394,7 @@ func (s *Service) searchScope(ctx context.Context, scope queryScope, request Req
 	if err != nil {
 		return index.Snapshot{}, nil, nil, err
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	pathPrefix := scope.PathPrefix
 	if pathPrefix != "" {
@@ -373,7 +417,7 @@ func (s *Service) searchScope(ctx context.Context, scope queryScope, request Req
 	return snapshot, queryVector, results, nil
 }
 
-func (s *Service) resolveQueryScopes(inputPath string, dataDir string) ([]queryScope, error) {
+func (s *Service) resolveQueryScopes(inputPath string, dataDir string, fileType string) ([]queryScope, error) {
 	if strings.TrimSpace(dataDir) == "" {
 		paths, err := s.deps.ResolveAppPaths()
 		if err != nil {
@@ -387,13 +431,13 @@ func (s *Service) resolveQueryScopes(inputPath string, dataDir string) ([]queryS
 	}
 	dataDir = filepath.Clean(expandedDataDir)
 	if strings.TrimSpace(inputPath) == "" {
-		return s.resolveGlobalQueryScopes(dataDir)
+		return s.resolveGlobalQueryScopes(dataDir, fileType)
 	}
-	return s.resolvePathQueryScopes(inputPath, dataDir)
+	return s.resolvePathQueryScopes(inputPath, dataDir, fileType)
 }
 
-func (s *Service) resolvePathQueryScopes(inputPath string, dataDir string) ([]queryScope, error) {
-	match, err := s.deps.ResolveCollection(dataDir, inputPath)
+func (s *Service) resolvePathQueryScopes(inputPath string, dataDir string, fileType string) ([]queryScope, error) {
+	match, err := s.deps.ResolveCollection(dataDir, inputPath, fileType)
 	if err != nil {
 		if errors.Is(err, index.ErrCollectionNotFound) {
 			legacyDBPath, legacyFound, legacyErr := s.findLegacyLocalIndex(inputPath)
@@ -418,7 +462,7 @@ func (s *Service) resolvePathQueryScopes(inputPath string, dataDir string) ([]qu
 	}}, nil
 }
 
-func (s *Service) resolveGlobalQueryScopes(dataDir string) ([]queryScope, error) {
+func (s *Service) resolveGlobalQueryScopes(dataDir string, fileType string) ([]queryScope, error) {
 	registry, err := s.deps.LoadCollections(dataDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -432,6 +476,13 @@ func (s *Service) resolveGlobalQueryScopes(dataDir string) ([]queryScope, error)
 
 	scopes := make([]queryScope, 0, len(registry.Collections))
 	for _, entry := range registry.Collections {
+		entryFileType := normalizeFileType(entry.FileType)
+		if entryFileType == "" {
+			entryFileType = defaultFileType
+		}
+		if entryFileType != normalizeFileType(fileType) {
+			continue
+		}
 		info, statErr := s.deps.Stat(entry.RootDir)
 		if statErr != nil || !info.IsDir() {
 			continue
@@ -478,6 +529,9 @@ func combinedManifest(manifests []domain.StoreConfig) domain.StoreConfig {
 		}
 		if combined.DBVersion != manifest.DBVersion {
 			combined.DBVersion = "multiple"
+		}
+		if combined.FileType != manifest.FileType {
+			combined.FileType = "multiple"
 		}
 	}
 	if len(manifests) > 1 {

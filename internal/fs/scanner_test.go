@@ -76,6 +76,27 @@ func TestScanMarkdownRecursiveRespectsIgnoredDirectories(t *testing.T) {
 	require.False(t, files[2].ModTime.IsZero())
 }
 
+func TestScanFilesUsesRegisteredExtensions(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a.md"), []byte("# A"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "b.png"), []byte("png"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "c.txt"), []byte("txt"), 0o644))
+
+	files, err := ScanFiles(ScanOptions{
+		RootPath:  root,
+		Recursive: true,
+		Extensions: map[string]string{
+			".md":  "markdown",
+			".png": "image",
+		},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, files, 2)
+	require.Equal(t, "markdown", files[0].DocType)
+	require.Equal(t, "image", files[1].DocType)
+}
+
 func TestScanMarkdownNonRecursiveOnlyReadsTopLevelMarkdown(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, "root.md"), []byte("# root"), 0o644))

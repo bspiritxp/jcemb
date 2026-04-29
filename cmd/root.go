@@ -18,6 +18,7 @@ func NewRootCmd() *cobra.Command {
 		newScanCmd(bootstrap),
 		newQueryCmd(bootstrap),
 		newConfigCmd(bootstrap, app.RunConfigCommand),
+		newCollectionCmd(bootstrap, app.RunCollectionList, app.RunCollectionDelete),
 		NewVersionCmd(),
 	)
 

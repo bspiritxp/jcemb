@@ -11,7 +11,7 @@ without running a separate vector database service.
 
 ## Features
 
-- Markdown-only document ingestion.
+- Markdown and image ingestion through scan providers.
 - Unified global storage for configuration and vector data.
 - Default embedding provider: Ollama.
 - Default embedding model: `bge-m3`.
@@ -29,11 +29,16 @@ without running a separate vector database service.
 - Go 1.26.2 or newer.
 - Ollama running locally at `http://localhost:11434`.
 - The `bge-m3` model available in Ollama.
+- For image vectors, Python 3 plus model backend packages:
+  - default OpenCLIP: `open_clip_torch`, `torch`, `pillow`
+  - optional Jina CLIP v2: `transformers`, `torch`, `pillow`, `einops`, `timm`
+- For image metadata, an Ollama vision model such as `llava`.
 
 Install and prepare Ollama:
 
 ```bash
 ollama pull bge-m3
+ollama pull llava
 ollama serve
 ```
 
@@ -120,7 +125,7 @@ jcemb scan /path/to/docs -r --force
 
 ### `scan`
 
-Scan Markdown files into the unified vector store.
+Scan registered file types into the unified vector store. Markdown and images are built in.
 
 ```bash
 jcemb scan [path] [flags]
@@ -135,7 +140,6 @@ Common flags:
 | `-m, --model` | Embedding model. Default: from config. |
 | `-c, --concurccy` | Number of concurrent workers. |
 | `--force` | Rescan all documents even if unchanged. |
-| `-t, --type` | Document type. Currently only `md` is supported. |
 
 The vector data and manifests are stored in a unified global directory (e.g., `~/.local/share/jcemb` on Linux).
 
@@ -153,7 +157,8 @@ Common flags:
 |---|---|
 | `--path` | Optional indexed file or directory path to restrict results. |
 | `-l, --limit` | Maximum number of results. Default: `10`. |
-| `-t, --tags` | Required tags. Multiple tags use AND semantics. |
+| `-t, --file-type` | File type to query. Default: `markdown`; use `image` for image search. |
+| `--tags` | Required tags filter. Multiple tags use AND semantics. |
 | `-u, --unique` | Deduplicate results by Markdown file. |
 | `--full` | Show full chunk content instead of a preview. |
 | `--json` | Output the final result list as JSON. |
@@ -177,6 +182,55 @@ jcemb config
 
 This command allows you to configure the default embedding provider, model, and
 other settings. It requires an interactive terminal.
+
+Image model settings can also be placed in the config file:
+
+```json
+{
+  "image": {
+    "provider": "openclip",
+    "model": "ViT-B-32",
+    "pretrained": "laion2b_s34b_b79k",
+    "dimensions": 512,
+    "device": "auto",
+    "python": "python3",
+    "vision_model": "llava"
+  }
+}
+```
+
+Use `"provider": "jina-clip"` and `"model": "jinaai/jina-clip-v2"` to switch
+image vectors to Jina CLIP v2.
+
+OpenAI can be used for text embeddings, and for image search via vision
+description plus text embeddings. The recommended default embedding model is
+`text-embedding-3-small` with 1536 dimensions. `text-embedding-3-large` is the
+higher-quality option when cost is less important.
+
+```json
+{
+  "provider": "openai",
+  "model": "text-embedding-3-small",
+  "vector_dim": 1536,
+  "openai": {
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "sk-...",
+    "batch_size": 128,
+    "timeout": "60s",
+    "dimensions": 1536
+  },
+  "image": {
+    "provider": "openai",
+    "model": "text-embedding-3-small",
+    "dimensions": 1536,
+    "vision_model": "gpt-4.1-mini"
+  }
+}
+```
+
+`OPENAI_API_KEY` and `OPENAI_BASE_URL` can be used instead of storing credentials
+in the config file. OpenAI embedding models are text-only, so image vectors are
+generated from an OpenAI vision description of the image.
 
 ### `version`
 
@@ -210,13 +264,17 @@ All requested tags must be present on the matched document.
 
 ## How It Works
 
-1. `scan` scans Markdown files and skips ignored directories such as
-   `.git` and `node_modules`.
-2. Documents are split by Markdown structure.
-3. Chunks are embedded through the configured provider and model.
-4. Vector records and versioned manifests are stored in a unified global
+1. `scan` discovers registered file extensions and skips ignored directories
+   such as `.git` and `node_modules`.
+2. Markdown files are split by Markdown structure; image files are represented
+   by one generated description record.
+3. Markdown chunks are embedded through the configured provider/model. Images
+   use OpenCLIP by default for vectors, optionally Jina CLIP v2, and Ollama
+   vision only for metadata.
+4. Vector records and versioned manifests are stored by root and file type in a unified global
    storage directory.
-5. `query` embeds the search text with the stored provider/model config.
+5. `query` embeds the search input with the stored file-type config. For
+   `--file-type image`, an existing image path is treated as image-to-image search.
 6. Results are sorted, thresholded, optionally deduplicated, diversified with
    MMR, and then rendered as text or JSON.
 

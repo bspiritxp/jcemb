@@ -23,7 +23,6 @@ func NewScanCmd() *cobra.Command {
 func newScanCmd(bootstrap app.Bootstrap) *cobra.Command {
 	defaults := config.Defaults()
 	options := ScanOptions{
-		Type:        "md",
 		Concurrency: 2,
 		Provider:    bootstrap.Config.Settings.Provider,
 		Model:       bootstrap.Config.Settings.Model,
@@ -61,12 +60,13 @@ func newScanCmd(bootstrap app.Bootstrap) *cobra.Command {
 				return err
 			}
 
-			progress.Finish(result.Summary)
+			progress.Finish(result)
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVarP(&options.Type, "type", "t", options.Type, "document type to scan")
+	_ = cmd.Flags().MarkHidden("type")
 	cmd.Flags().IntVarP(&options.Concurrency, "concurccy", "c", options.Concurrency, "number of concurrent workers")
 	cmd.Flags().StringVarP(&options.Provider, "provider", "p", options.Provider, "embedding provider")
 	cmd.Flags().StringVarP(&options.Model, "model", "m", options.Model, "embedding model")

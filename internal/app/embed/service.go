@@ -2,6 +2,8 @@ package embed
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -14,10 +16,12 @@ import (
 	"github.com/bspiritxp/jcemb/internal/domain"
 	internalfs "github.com/bspiritxp/jcemb/internal/fs"
 	"github.com/bspiritxp/jcemb/internal/index"
-	"github.com/bspiritxp/jcemb/internal/metadata"
 	jcpaths "github.com/bspiritxp/jcemb/internal/paths"
 	_ "github.com/bspiritxp/jcemb/internal/provider/ollama"
+	_ "github.com/bspiritxp/jcemb/internal/provider/openai"
 	"github.com/bspiritxp/jcemb/internal/registry"
+	_ "github.com/bspiritxp/jcemb/internal/scanprovider/image"
+	_ "github.com/bspiritxp/jcemb/internal/scanprovider/markdown"
 	_ "github.com/bspiritxp/jcemb/internal/splitter/markdown"
 	"github.com/bspiritxp/jcemb/internal/storage/lancedb"
 )
@@ -71,6 +75,7 @@ type Result struct {
 	RootDir   string
 	Recipe    domain.EmbedRecipe
 	Store     domain.StoreConfig
+	CollectionCount int
 	Rebuilt   bool
 	Processed []string
 	Skipped   []string
@@ -83,7 +88,6 @@ type RunError struct {
 
 type Dependencies struct {
 	Scan            func(options internalfs.ScanOptions) ([]internalfs.File, error)
-	LoadFile        func(file internalfs.File) (metadata.SourceDocument, error)
 	LoadIndex       func(rootDir string) (index.Snapshot, error)
 	SaveIndex       func(rootDir string, config domain.StoreConfig, files []domain.FileState) error
 	ResolveAppPaths func() (jcpaths.AppPaths, error)
@@ -93,6 +97,8 @@ type Dependencies struct {
 	GetProvider     func(name string) (registry.ProviderFactory, error)
 	GetSplitter     func(name string) (registry.SplitterFactory, error)
 	GetVectorStore  func(name string) (registry.VectorStoreFactory, error)
+	GetScanProvider func(fileType string) (domain.ScanProvider, error)
+	ExtensionMap    func() map[string]string
 	VectorStoreName string
 	SplitterName    string
 	SplitterVersion string
@@ -143,10 +149,7 @@ type fileResult struct {
 
 func NewService(deps Dependencies) *Service {
 	if deps.Scan == nil {
-		deps.Scan = internalfs.ScanMarkdown
-	}
-	if deps.LoadFile == nil {
-		deps.LoadFile = metadata.LoadFile
+		deps.Scan = internalfs.ScanFiles
 	}
 	if deps.LoadIndex == nil {
 		deps.LoadIndex = index.Load
@@ -174,6 +177,12 @@ func NewService(deps Dependencies) *Service {
 	}
 	if deps.GetVectorStore == nil {
 		deps.GetVectorStore = registry.GetVectorStore
+	}
+	if deps.GetScanProvider == nil {
+		deps.GetScanProvider = registry.GetScanProvider
+	}
+	if deps.ExtensionMap == nil {
+		deps.ExtensionMap = registry.ScanProviderExtensionMap
 	}
 	if strings.TrimSpace(deps.VectorStoreName) == "" {
 		deps.VectorStoreName = defaultVectorStoreName
@@ -238,56 +247,60 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 		return Result{}, err
 	}
 
-	recipe := s.buildRecipe(normalized)
-	result := Result{RootDir: rootDir, Recipe: recipe}
+	result := Result{RootDir: rootDir}
 
-	files, err := s.deps.Scan(internalfs.ScanOptions{RootPath: normalized.Path, Recursive: normalized.Recursive})
+	extensions := s.deps.ExtensionMap()
+	files, err := s.deps.Scan(internalfs.ScanOptions{RootPath: normalized.Path, Recursive: normalized.Recursive, Extensions: extensions})
 	if err != nil {
 		return result, err
 	}
-
-	state, err := s.preparePipelineState(rootDir, normalized, recipe)
-	if err != nil {
-		return result, err
-	}
-	result.Rebuilt = state.rebuildRequired
-
-	providerFactory, err := s.deps.GetProvider(normalized.Provider)
-	if err != nil {
-		return result, err
-	}
-	provider, err := providerFactory(domain.ProviderConfig{Name: normalized.Provider, Options: cloneStringMap(normalized.ProviderOptions)})
-	if err != nil {
-		return result, err
-	}
-	embedder, err := provider.NewEmbedder(domain.ModelSpec{Provider: normalized.Provider, Name: normalized.Model})
-	if err != nil {
-		return result, err
-	}
-
-	splitterFactory, err := s.deps.GetSplitter(s.deps.SplitterName)
-	if err != nil {
-		return result, err
-	}
-	splitter, err := splitterFactory(domain.SplitterSpec{Name: s.deps.SplitterName, Version: s.deps.SplitterVersion})
-	if err != nil {
-		return result, err
-	}
-
-	jobs, seen := s.buildJobs(files, normalized, state)
-	result, err = s.processJobs(ctx, result, jobs, seen, state, splitter, embedder)
-	if err != nil {
-		return result, err
-	}
-
-	result.Store = state.storeConfig
-	if state.store != nil {
-		if closeErr := state.store.Close(); closeErr != nil {
-			return result, closeErr
+	if normalized.Type != "" {
+		if _, err := s.deps.GetScanProvider(normalized.Type); err != nil {
+			return result, fmt.Errorf("scan: unsupported type %q", normalized.Type)
 		}
+		files = filterFilesByType(files, normalized.Type)
 	}
-	if err := s.registerCollection(state); err != nil {
-		return result, err
+
+	filesByType := groupFilesByType(files)
+	fileTypes := sortedFileTypes(filesByType)
+	result.CollectionCount = len(fileTypes)
+	for _, fileType := range fileTypes {
+		scanProvider, err := s.deps.GetScanProvider(fileType)
+		if err != nil {
+			return result, err
+		}
+		providerConfig := domain.ScanProviderConfig{
+			FileType:        fileType,
+			DataDir:         normalized.DataDir,
+			Provider:        normalized.Provider,
+			ProviderOptions: cloneStringMap(normalized.ProviderOptions),
+			Model:           normalized.Model,
+			Recursive:       normalized.Recursive,
+			Force:           normalized.Force,
+		}
+		recipe := scanProvider.Recipe(providerConfig)
+		if result.Recipe.Type == "" {
+			result.Recipe = recipe
+		}
+		state, err := s.preparePipelineState(rootDir, normalized, recipe, fileType)
+		if err != nil {
+			return result, err
+		}
+		result.Rebuilt = result.Rebuilt || state.rebuildRequired
+		jobs, seen := s.buildJobs(filesByType[fileType], normalized, state)
+		result, err = s.processJobs(ctx, result, jobs, seen, state, scanProvider, providerConfig)
+		if err != nil {
+			return result, err
+		}
+		result.Store = state.storeConfig
+		if state.store != nil {
+			if closeErr := state.store.Close(); closeErr != nil {
+				return result, closeErr
+			}
+		}
+		if err := s.registerCollection(state); err != nil {
+			return result, err
+		}
 	}
 
 	if result.Summary.Errors > 0 {
@@ -302,10 +315,10 @@ func (s *Service) normalizeRequest(request Request) (Request, error) {
 		normalized.Path = "."
 	}
 	if strings.TrimSpace(normalized.Type) == "" {
-		normalized.Type = s.deps.DefaultDocType
+		normalized.Type = ""
 	}
-	if normalized.Type != defaultType {
-		return Request{}, fmt.Errorf("scan: unsupported type %q", normalized.Type)
+	if normalized.Type == "md" {
+		normalized.Type = "markdown"
 	}
 	if strings.TrimSpace(normalized.DataDir) == "" {
 		paths, err := s.deps.ResolveAppPaths()
@@ -332,32 +345,9 @@ func (s *Service) normalizeRequest(request Request) (Request, error) {
 	return normalized, nil
 }
 
-func (s *Service) buildRecipe(request Request) domain.EmbedRecipe {
-	return domain.EmbedRecipe{
-		Type:    request.Type,
-		Version: s.deps.RecipeVersion,
-		Provider: domain.ProviderConfig{
-			Name:    request.Provider,
-			Options: cloneStringMap(request.ProviderOptions),
-		},
-		Model: domain.ModelSpec{
-			Provider: request.Provider,
-			Name:     request.Model,
-		},
-		Splitter: domain.SplitterSpec{
-			Name:    s.deps.SplitterName,
-			Version: s.deps.SplitterVersion,
-		},
-		Flags: map[string]bool{
-			"recursive": request.Recursive,
-			"force":     request.Force,
-		},
-	}
-}
-
-func (s *Service) preparePipelineState(rootDir string, request Request, recipe domain.EmbedRecipe) (*pipelineState, error) {
+func (s *Service) preparePipelineState(rootDir string, request Request, recipe domain.EmbedRecipe, fileType string) (*pipelineState, error) {
 	rootIdentity := jcpaths.NormalizeStoredPath(rootDir)
-	collectionID := index.CollectionIDForRoot(rootIdentity)
+	collectionID := index.CollectionIDForRootAndFileType(rootIdentity, fileType)
 	storageRoot := jcpaths.CollectionStorageDir(request.DataDir, collectionID)
 	state := &pipelineState{
 		rootDir:     rootDir,
@@ -366,16 +356,18 @@ func (s *Service) preparePipelineState(rootDir string, request Request, recipe d
 		recipe:      recipe,
 		states:      map[string]domain.FileState{},
 		storeConfig: domain.StoreConfig{
-			CollectionID: collectionID,
-			RootIdentity: rootIdentity,
-			RootDir:      rootDir,
-			DataDir:      request.DataDir,
-			Namespace:    s.deps.VectorStoreName,
-			Provider:     request.Provider,
-			Model:        request.Model,
-			Splitter:     s.deps.SplitterName,
-			DBVersion:    lancedb.DBVersion,
-			CreatedAt:    s.deps.Now(),
+			CollectionID:    collectionID,
+			RootIdentity:    rootIdentity,
+			RootDir:         rootDir,
+			DataDir:         request.DataDir,
+			FileType:        fileType,
+			Namespace:       s.deps.VectorStoreName,
+			Provider:        recipe.Provider.Name,
+			ProviderOptions: cloneStringMap(recipe.Provider.Options),
+			Model:           recipe.Model.Name,
+			Splitter:        recipe.Splitter.Name,
+			DBVersion:       lancedb.DBVersion,
+			CreatedAt:       s.deps.Now(),
 			Flags: map[string]bool{
 				"recursive": request.Recursive,
 				"force":     request.Force,
@@ -383,7 +375,13 @@ func (s *Service) preparePipelineState(rootDir string, request Request, recipe d
 		},
 	}
 
-	snapshot, err := s.deps.LoadIndex(rootDir)
+	snapshot, err := s.deps.LoadIndex(storageRoot)
+	if errors.Is(err, index.ErrStateNotFound) && fileType == "markdown" {
+		if fallbackSnapshot, fallbackErr := s.deps.LoadIndex(rootDir); fallbackErr == nil {
+			snapshot = fallbackSnapshot
+			err = nil
+		}
+	}
 	switch {
 	case err == nil:
 		state.snapshot = snapshot
@@ -427,9 +425,9 @@ func (s *Service) buildJobs(files []internalfs.File, request Request, state *pip
 		seen[file.RelPath] = struct{}{}
 		prev, ok := state.states[file.RelPath]
 		if !request.Force && !state.rebuildRequired && ok {
-			sourceDocument, err := s.deps.LoadFile(file)
+			fileHash, err := computeFileHash(file.FilePath)
 			if err == nil {
-				if _, needs := index.FileNeedsReindex(prev, sourceDocument.Metadata.FileHash, state.recipe); !needs {
+				if _, needs := index.FileNeedsReindex(prev, fileHash, state.recipe); !needs {
 					jobs = append(jobs, fileJob{file: file, mode: jobSkip, prev: prev})
 					continue
 				}
@@ -440,7 +438,7 @@ func (s *Service) buildJobs(files []internalfs.File, request Request, state *pip
 	return jobs, seen
 }
 
-func (s *Service) processJobs(ctx context.Context, result Result, jobs []fileJob, seen map[string]struct{}, state *pipelineState, splitter domain.Splitter, embedder domain.Embedder) (Result, error) {
+func (s *Service) processJobs(ctx context.Context, result Result, jobs []fileJob, seen map[string]struct{}, state *pipelineState, scanProvider domain.ScanProvider, providerConfig domain.ScanProviderConfig) (Result, error) {
 	workerCount := state.request.Concurrency
 	if workerCount > len(jobs) && len(jobs) > 0 {
 		workerCount = len(jobs)
@@ -458,7 +456,7 @@ func (s *Service) processJobs(ctx context.Context, result Result, jobs []fileJob
 		go func() {
 			defer workers.Done()
 			for job := range jobCh {
-				resultCh <- s.executeJob(ctx, job, state.recipe, splitter, embedder)
+				resultCh <- s.executeJob(ctx, job, state.recipe, scanProvider, providerConfig)
 			}
 		}()
 	}
@@ -506,7 +504,7 @@ func (s *Service) processJobs(ctx context.Context, result Result, jobs []fileJob
 		for _, fileState := range state.states {
 			files = append(files, fileState)
 		}
-		if saveErr := s.deps.SaveIndex(state.rootDir, state.storeConfig, files); saveErr != nil {
+		if saveErr := s.deps.SaveIndex(state.storageRoot, state.storeConfig, files); saveErr != nil {
 			return result, saveErr
 		}
 	}
@@ -517,69 +515,34 @@ func (s *Service) processJobs(ctx context.Context, result Result, jobs []fileJob
 	return result, nil
 }
 
-func (s *Service) executeJob(ctx context.Context, job fileJob, recipe domain.EmbedRecipe, splitter domain.Splitter, embedder domain.Embedder) fileResult {
+func (s *Service) executeJob(ctx context.Context, job fileJob, recipe domain.EmbedRecipe, scanProvider domain.ScanProvider, providerConfig domain.ScanProviderConfig) fileResult {
 	result := fileResult{relPath: job.file.RelPath, mode: job.mode, prev: job.prev}
 	if job.mode == jobSkip {
 		result.state = job.prev
 		return result
 	}
 
-	sourceDocument, err := s.deps.LoadFile(job.file)
+	providerResult, err := scanProvider.BuildRecords(ctx, domain.ScanProviderRequest{
+		File: domain.SourceFile{
+			RootDir:  job.file.RootDir,
+			FilePath: job.file.FilePath,
+			RelPath:  job.file.RelPath,
+			FileName: job.file.FileName,
+			DocType:  job.file.DocType,
+			ModTime:  job.file.ModTime,
+		},
+		Config:      providerConfig,
+		Recipe:      recipe,
+		Now:         s.deps.Now,
+		GetProvider: providerFactoryAdapter(s.deps.GetProvider),
+		GetSplitter: splitterFactoryAdapter(s.deps.GetSplitter),
+	})
 	if err != nil {
 		result.err = err
 		return result
 	}
-	document := sourceDocument.Metadata.DomainDocument(sourceDocument.Content)
-
-	chunks, err := splitter.Split(ctx, document)
-	if err != nil {
-		result.err = err
-		return result
-	}
-
-	records := make([]domain.VectorRecord, 0, len(chunks))
-	chunkIDs := make([]string, 0, len(chunks))
-	if len(chunks) > 0 {
-		inputs := make([]domain.EmbedInput, 0, len(chunks))
-		for _, chunk := range chunks {
-			inputs = append(inputs, domain.EmbedInput{ChunkID: chunk.ID, Text: chunk.Content, Metadata: chunk.Metadata})
-		}
-
-		embeddings, err := embedder.Embed(ctx, domain.EmbedRequest{Recipe: recipe, Inputs: inputs})
-		if err != nil {
-			result.err = err
-			return result
-		}
-
-		vectors := make(map[string][]float32, len(embeddings))
-		for _, embedding := range embeddings {
-			vectors[embedding.ChunkID] = append([]float32(nil), embedding.Vector...)
-		}
-		for _, chunk := range chunks {
-			vector, ok := vectors[chunk.ID]
-			if !ok {
-				result.err = fmt.Errorf("scan: missing vector for chunk %s", chunk.ID)
-				return result
-			}
-			records = append(records, domain.VectorRecord{Chunk: chunk, Vector: vector})
-			chunkIDs = append(chunkIDs, chunk.ID)
-		}
-	}
-
-	result.records = records
-	result.state = domain.FileState{
-		Source:        document.Source,
-		FilePath:      document.FilePath,
-		RelPath:       document.RelPath,
-		FileName:      document.FileName,
-		DocType:       document.DocType,
-		FileHash:      document.FileHash,
-		ModTime:       job.file.ModTime,
-		RecipeHash:    recipe.Hash(),
-		ChunkIDs:      chunkIDs,
-		ChunkCount:    len(chunkIDs),
-		LastIndexedAt: s.deps.Now(),
-	}
+	result.records = providerResult.Records
+	result.state = providerResult.State
 	return result
 }
 
@@ -726,6 +689,87 @@ func (s *Service) registerCollection(state *pipelineState) error {
 		CollectionID: state.storeConfig.CollectionID,
 		RootIdentity: state.storeConfig.RootIdentity,
 		RootDir:      state.rootDir,
+		FileType:     state.storeConfig.FileType,
 		UpdatedAt:    s.deps.Now(),
 	})
+}
+
+func filterFilesByType(files []internalfs.File, fileType string) []internalfs.File {
+	normalized := normalizeFileType(fileType)
+	if normalized == "" {
+		return files
+	}
+	filtered := make([]internalfs.File, 0, len(files))
+	for _, file := range files {
+		if normalizeFileType(file.DocType) == normalized {
+			filtered = append(filtered, file)
+		}
+	}
+	return filtered
+}
+
+func groupFilesByType(files []internalfs.File) map[string][]internalfs.File {
+	grouped := make(map[string][]internalfs.File)
+	for _, file := range files {
+		fileType := normalizeFileType(file.DocType)
+		if fileType == "" {
+			continue
+		}
+		file.DocType = fileType
+		grouped[fileType] = append(grouped[fileType], file)
+	}
+	return grouped
+}
+
+func sortedFileTypes(filesByType map[string][]internalfs.File) []string {
+	fileTypes := make([]string, 0, len(filesByType))
+	for fileType := range filesByType {
+		fileTypes = append(fileTypes, fileType)
+	}
+	sort.Strings(fileTypes)
+	return fileTypes
+}
+
+func normalizeFileType(fileType string) string {
+	trimmed := strings.TrimSpace(fileType)
+	if trimmed == "" {
+		return ""
+	}
+	if trimmed == "md" {
+		return "markdown"
+	}
+	return trimmed
+}
+
+func computeFileHash(path string) (string, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func providerFactoryAdapter(getProvider func(name string) (registry.ProviderFactory, error)) func(string) (func(domain.ProviderConfig) (domain.EmbedderProvider, error), error) {
+	return func(name string) (func(domain.ProviderConfig) (domain.EmbedderProvider, error), error) {
+		factory, err := getProvider(name)
+		if err != nil {
+			return nil, err
+		}
+		return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
+			return factory(config)
+		}, nil
+	}
+}
+
+func splitterFactoryAdapter(getSplitter func(name string) (registry.SplitterFactory, error)) func(string) (func(domain.SplitterSpec) (domain.Splitter, error), error) {
+	return func(name string) (func(domain.SplitterSpec) (domain.Splitter, error), error) {
+		factory, err := getSplitter(name)
+		if err != nil {
+			return nil, err
+		}
+		return func(spec domain.SplitterSpec) (domain.Splitter, error) {
+			return factory(spec)
+		}, nil
+	}
 }

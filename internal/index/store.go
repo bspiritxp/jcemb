@@ -50,16 +50,18 @@ type fileManifestEntry struct {
 }
 
 type ConfigManifest struct {
-	CollectionID string    `json:"collection_id,omitempty"`
-	RootIdentity string    `json:"root_identity,omitempty"`
-	Version      string    `json:"version"`
-	Generation   string    `json:"generation"`
-	Provider     string    `json:"provider"`
-	Model        string    `json:"model"`
-	Splitter     string    `json:"splitter"`
-	VectorDim    int       `json:"vector_dim"`
-	DBVersion    string    `json:"db_version"`
-	CreatedAt    time.Time `json:"created_at"`
+	CollectionID    string            `json:"collection_id,omitempty"`
+	RootIdentity    string            `json:"root_identity,omitempty"`
+	FileType        string            `json:"file_type,omitempty"`
+	Version         string            `json:"version"`
+	Generation      string            `json:"generation"`
+	Provider        string            `json:"provider"`
+	ProviderOptions map[string]string `json:"provider_options,omitempty"`
+	Model           string            `json:"model"`
+	Splitter        string            `json:"splitter"`
+	VectorDim       int               `json:"vector_dim"`
+	DBVersion       string            `json:"db_version"`
+	CreatedAt       time.Time         `json:"created_at"`
 }
 
 func Load(rootDir string) (Snapshot, error) {
@@ -169,16 +171,18 @@ func configManifestFromDomain(config domain.StoreConfig, generation string, crea
 	}
 
 	return ConfigManifest{
-		CollectionID: collectionID,
-		RootIdentity: rootIdentity,
-		Version:      SchemaVersionV1,
-		Generation:   generation,
-		Provider:     strings.TrimSpace(config.Provider),
-		Model:        strings.TrimSpace(config.Model),
-		Splitter:     strings.TrimSpace(config.Splitter),
-		VectorDim:    config.VectorDim,
-		DBVersion:    strings.TrimSpace(config.DBVersion),
-		CreatedAt:    createdAt,
+		CollectionID:    collectionID,
+		RootIdentity:    rootIdentity,
+		FileType:        normalizeFileType(config.FileType),
+		Version:         SchemaVersionV1,
+		Generation:      generation,
+		Provider:        strings.TrimSpace(config.Provider),
+		ProviderOptions: safeProviderOptions(config.ProviderOptions),
+		Model:           strings.TrimSpace(config.Model),
+		Splitter:        strings.TrimSpace(config.Splitter),
+		VectorDim:       config.VectorDim,
+		DBVersion:       strings.TrimSpace(config.DBVersion),
+		CreatedAt:       createdAt,
 	}
 }
 
@@ -307,7 +311,22 @@ func (m ConfigManifest) validate() error {
 }
 
 func CollectionIDForRoot(rootIdentity string) string {
-	return jcpaths.CollectionIDForRoot(rootIdentity)
+	return CollectionIDForRootAndFileType(rootIdentity, "markdown")
+}
+
+func CollectionIDForRootAndFileType(rootIdentity string, fileType string) string {
+	normalizedRoot := jcpaths.NormalizeStoredPath(rootIdentity)
+	if normalizedRoot == "" {
+		return ""
+	}
+	normalizedFileType := normalizeFileType(fileType)
+	if normalizedFileType == "" {
+		normalizedFileType = "markdown"
+	}
+	if normalizedFileType == "markdown" {
+		return jcpaths.CollectionIDForRoot(normalizedRoot)
+	}
+	return jcpaths.CollectionIDForRoot(normalizedRoot + "|file_type=" + normalizedFileType)
 }
 
 func collectionDBPath(config domain.StoreConfig) (string, error) {
@@ -315,4 +334,21 @@ func collectionDBPath(config domain.StoreConfig) (string, error) {
 		return "", nil
 	}
 	return filepath.Join(jcpaths.CollectionStorageDir(config.DataDir, config.CollectionID), DirectoryName), nil
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func safeProviderOptions(values map[string]string) map[string]string {
+	cloned := cloneStringMap(values)
+	delete(cloned, "openai_api_key")
+	return cloned
 }

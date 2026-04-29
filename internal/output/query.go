@@ -17,6 +17,7 @@ type QueryJSONEnvelope struct {
 	RootPath  string            `json:"root_path"`
 	Provider  string            `json:"provider"`
 	Model     string            `json:"model"`
+	FileType  string            `json:"file_type"`
 	VectorDim int               `json:"vector_dim"`
 	Tags      []string          `json:"tags"`
 	Results   []QueryJSONResult `json:"results"`
@@ -27,6 +28,7 @@ type QueryJSONResult struct {
 	Score     float64  `json:"score"`
 	RelPath   string   `json:"rel_path"`
 	TitlePath []string `json:"title_path"`
+	Tags      []string `json:"tags"`
 	ChunkID   string   `json:"chunk_id"`
 	Preview   string   `json:"preview"`
 }
@@ -37,6 +39,11 @@ func RenderQueryText(writer io.Writer, result queryapp.Result) error {
 	}
 	if _, err := fmt.Fprintf(writer, "%s %s %s/%s %s\n", Colorize(Magenta, "🤖"), Colorize(Dim, "Provider:"), result.Manifest.Provider, result.Manifest.Model, Colorize(Dim, fmt.Sprintf("(dim=%d)", result.Manifest.VectorDim))); err != nil {
 		return err
+	}
+	if result.Manifest.FileType != "" {
+		if _, err := fmt.Fprintf(writer, "%s %s %s\n", Colorize(Dim, "•"), Colorize(Dim, "File type:"), result.Manifest.FileType); err != nil {
+			return err
+		}
 	}
 	if len(result.Tags) > 0 {
 		if _, err := fmt.Fprintf(writer, "%s %s %s\n", Colorize(Yellow, "🏷"), Colorize(Dim, "Tags (AND):"), Colorize(Yellow, strings.Join(result.Tags, ", "))); err != nil {
@@ -74,6 +81,11 @@ func RenderQueryText(writer io.Writer, result queryapp.Result) error {
 		if _, err := fmt.Fprintf(writer, "   %s %s\n", Colorize(Dim, "▸"), Colorize(Dim, titlePath)); err != nil {
 			return err
 		}
+		if len(entry.Chunk.Metadata.Tags) > 0 {
+			if _, err := fmt.Fprintf(writer, "   %s %s\n", Colorize(Yellow, "🏷"), Colorize(Yellow, strings.Join(entry.Chunk.Metadata.Tags, ", "))); err != nil {
+				return err
+			}
+		}
 
 		var content string
 		if result.Full {
@@ -99,6 +111,7 @@ func RenderQueryJSON(writer io.Writer, result queryapp.Result) error {
 		RootPath:  result.RootDir,
 		Provider:  result.Manifest.Provider,
 		Model:     result.Manifest.Model,
+		FileType:  result.Manifest.FileType,
 		VectorDim: result.Manifest.VectorDim,
 		Tags:      append([]string(nil), result.Tags...),
 		Results:   make([]QueryJSONResult, 0, len(result.Results)),
@@ -110,6 +123,7 @@ func RenderQueryJSON(writer io.Writer, result queryapp.Result) error {
 			Score:     entry.Score,
 			RelPath:   entry.Chunk.Metadata.RelPath,
 			TitlePath: append([]string(nil), entry.Chunk.Metadata.TitlePath...),
+			Tags:      append([]string(nil), entry.Chunk.Metadata.Tags...),
 			ChunkID:   entry.Chunk.ID,
 			Preview:   previewText(entry.Chunk.Content),
 		})

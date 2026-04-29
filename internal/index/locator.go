@@ -20,6 +20,7 @@ type CollectionEntry struct {
 	CollectionID string    `json:"collection_id"`
 	RootIdentity string    `json:"root_identity"`
 	RootDir      string    `json:"root_dir"`
+	FileType     string    `json:"file_type,omitempty"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
@@ -53,7 +54,7 @@ func SaveCollection(dataRoot string, entry CollectionEntry) error {
 
 	replaced := false
 	for index := range registry.Collections {
-		if registry.Collections[index].RootIdentity == normalized.RootIdentity {
+		if registry.Collections[index].RootIdentity == normalized.RootIdentity && normalizeFileType(registry.Collections[index].FileType) == normalizeFileType(normalized.FileType) {
 			registry.Collections[index] = normalized
 			replaced = true
 			break
@@ -65,6 +66,39 @@ func SaveCollection(dataRoot string, entry CollectionEntry) error {
 	sortCollectionEntries(registry.Collections)
 
 	return saveCollectionRegistry(dataRoot, registry)
+}
+
+// DeleteCollection removes the entry with collectionID from the global
+// collections registry. The collection's on-disk storage directory is NOT
+// touched here — the caller is responsible for removing
+// `<dataRoot>/collections/<collectionID>` separately. Returns
+// ErrCollectionNotFound if no matching entry exists.
+func DeleteCollection(dataRoot string, collectionID string) (CollectionEntry, error) {
+	collectionID = strings.TrimSpace(collectionID)
+	if collectionID == "" {
+		return CollectionEntry{}, fmt.Errorf("index: collection_id is required")
+	}
+
+	registry, err := LoadCollectionRegistry(dataRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return CollectionEntry{}, fmt.Errorf("%w: %s", ErrCollectionNotFound, collectionID)
+		}
+		return CollectionEntry{}, err
+	}
+
+	for i, entry := range registry.Collections {
+		if entry.CollectionID != collectionID {
+			continue
+		}
+		registry.Collections = append(registry.Collections[:i], registry.Collections[i+1:]...)
+		if err := saveCollectionRegistry(dataRoot, registry); err != nil {
+			return CollectionEntry{}, err
+		}
+		return entry, nil
+	}
+
+	return CollectionEntry{}, fmt.Errorf("%w: %s", ErrCollectionNotFound, collectionID)
 }
 
 func LoadCollectionRegistry(dataRoot string) (CollectionRegistry, error) {
@@ -81,6 +115,10 @@ func LoadCollectionRegistry(dataRoot string) (CollectionRegistry, error) {
 }
 
 func ResolveCollection(dataRoot string, inputPath string) (CollectionMatch, error) {
+	return ResolveCollectionForFileType(dataRoot, inputPath, "")
+}
+
+func ResolveCollectionForFileType(dataRoot string, inputPath string, fileType string) (CollectionMatch, error) {
 	resolved, err := jcpaths.ResolveCollectionRoot(inputPath)
 	if err != nil {
 		return CollectionMatch{}, err
@@ -102,6 +140,9 @@ func ResolveCollection(dataRoot string, inputPath string) (CollectionMatch, erro
 	var best *CollectionEntry
 	for index := range registry.Collections {
 		candidate := &registry.Collections[index]
+		if normalizedFileType := normalizeFileType(fileType); normalizedFileType != "" && normalizeFileType(candidate.FileType) != normalizedFileType {
+			continue
+		}
 		if !hasRootPrefix(searchIdentity, candidate.RootIdentity) {
 			continue
 		}
@@ -182,7 +223,7 @@ func normalizeCollectionEntry(entry CollectionEntry) (CollectionEntry, error) {
 
 	collectionID := strings.TrimSpace(entry.CollectionID)
 	if collectionID == "" {
-		collectionID = CollectionIDForRoot(rootIdentity)
+		collectionID = CollectionIDForRootAndFileType(rootIdentity, entry.FileType)
 	}
 	if collectionID == "" {
 		return CollectionEntry{}, fmt.Errorf("index: collection_id is required")
@@ -197,6 +238,7 @@ func normalizeCollectionEntry(entry CollectionEntry) (CollectionEntry, error) {
 		CollectionID: collectionID,
 		RootIdentity: rootIdentity,
 		RootDir:      rootDir,
+		FileType:     normalizeFileType(entry.FileType),
 		UpdatedAt:    updatedAt,
 	}, nil
 }
@@ -218,19 +260,31 @@ func (r CollectionRegistry) validate() error {
 		if rootIdentity != entry.RootIdentity {
 			return fmt.Errorf("index: collections[%d] root_identity must be normalized", index)
 		}
-		if entry.CollectionID != CollectionIDForRoot(rootIdentity) {
+		if entry.CollectionID != CollectionIDForRootAndFileType(rootIdentity, entry.FileType) {
 			return fmt.Errorf("index: collections[%d]: collection_id does not match root_identity", index)
 		}
 		if strings.TrimSpace(entry.RootDir) == "" {
 			return fmt.Errorf("index: collections[%d]: root_dir is required", index)
 		}
-		if _, exists := seen[entry.RootIdentity]; exists {
-			return fmt.Errorf("index: duplicate collection root_identity %q", entry.RootIdentity)
+		seenKey := entry.RootIdentity + "|" + normalizeFileType(entry.FileType)
+		if _, exists := seen[seenKey]; exists {
+			return fmt.Errorf("index: duplicate collection root_identity/file_type %q/%q", entry.RootIdentity, entry.FileType)
 		}
-		seen[entry.RootIdentity] = struct{}{}
+		seen[seenKey] = struct{}{}
 	}
 
 	return nil
+}
+
+func normalizeFileType(fileType string) string {
+	trimmed := strings.TrimSpace(fileType)
+	if trimmed == "" {
+		return "markdown"
+	}
+	if trimmed == "md" {
+		return "markdown"
+	}
+	return trimmed
 }
 
 func sortCollectionEntries(entries []CollectionEntry) {

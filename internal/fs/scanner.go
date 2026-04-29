@@ -28,8 +28,9 @@ var defaultIgnoredDirectories = map[string]struct{}{
 }
 
 type ScanOptions struct {
-	RootPath  string
-	Recursive bool
+	RootPath   string
+	Recursive  bool
+	Extensions map[string]string
 }
 
 type File struct {
@@ -42,8 +43,17 @@ type File struct {
 }
 
 func ScanMarkdown(options ScanOptions) ([]File, error) {
+	options.Extensions = map[string]string{".md": markdownDocType}
+	return ScanFiles(options)
+}
+
+func ScanFiles(options ScanOptions) ([]File, error) {
 	if strings.TrimSpace(options.RootPath) == "" {
 		return nil, fmt.Errorf("fs: root path is required")
+	}
+	extensions := normalizeExtensions(options.Extensions)
+	if len(extensions) == 0 {
+		return nil, fmt.Errorf("fs: at least one extension is required")
 	}
 
 	rootPath, err := filepath.Abs(options.RootPath)
@@ -57,10 +67,10 @@ func ScanMarkdown(options ScanOptions) ([]File, error) {
 	}
 
 	if info.IsDir() {
-		return scanDirectory(rootPath, options.Recursive)
+		return scanDirectory(rootPath, options.Recursive, extensions)
 	}
 
-	file, ok, err := newMarkdownFile(filepath.Dir(rootPath), rootPath)
+	file, ok, err := newFile(filepath.Dir(rootPath), rootPath, extensions)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +81,7 @@ func ScanMarkdown(options ScanOptions) ([]File, error) {
 	return []File{file}, nil
 }
 
-func scanDirectory(rootPath string, recursive bool) ([]File, error) {
+func scanDirectory(rootPath string, recursive bool, extensions map[string]string) ([]File, error) {
 	files := make([]File, 0)
 
 	matcher, err := loadGitIgnoreMatcher(rootPath)
@@ -104,7 +114,7 @@ func scanDirectory(rootPath string, recursive bool) ([]File, error) {
 			return nil
 		}
 
-		file, ok, err := newMarkdownFile(rootPath, currentPath)
+		file, ok, err := newFile(rootPath, currentPath, extensions)
 		if err != nil {
 			return err
 		}
@@ -121,8 +131,9 @@ func scanDirectory(rootPath string, recursive bool) ([]File, error) {
 	return files, nil
 }
 
-func newMarkdownFile(rootPath string, filePath string) (File, bool, error) {
-	if strings.ToLower(filepath.Ext(filePath)) != ".md" {
+func newFile(rootPath string, filePath string, extensions map[string]string) (File, bool, error) {
+	docType, ok := extensions[strings.ToLower(filepath.Ext(filePath))]
+	if !ok {
 		return File{}, false, nil
 	}
 
@@ -146,9 +157,28 @@ func newMarkdownFile(rootPath string, filePath string) (File, bool, error) {
 		FilePath: normalizedFilePath,
 		RelPath:  normalizedFilePath,
 		FileName: path.Base(normalizedFilePath),
-		DocType:  markdownDocType,
+		DocType:  docType,
 		ModTime:  info.ModTime().UTC(),
 	}, true, nil
+}
+
+func normalizeExtensions(values map[string]string) map[string]string {
+	normalized := make(map[string]string, len(values))
+	for extension, docType := range values {
+		trimmedExtension := strings.TrimSpace(strings.ToLower(extension))
+		if trimmedExtension == "" {
+			continue
+		}
+		if !strings.HasPrefix(trimmedExtension, ".") {
+			trimmedExtension = "." + trimmedExtension
+		}
+		trimmedDocType := strings.TrimSpace(docType)
+		if trimmedDocType == "" {
+			continue
+		}
+		normalized[trimmedExtension] = trimmedDocType
+	}
+	return normalized
 }
 
 func normalizeAbsolutePath(value string) (string, error) {

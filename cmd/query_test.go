@@ -15,6 +15,7 @@ func TestNewQueryCmd(t *testing.T) {
 
 	flags := cmd.Flags()
 	require.NotNil(t, flags.Lookup("tags"))
+	require.NotNil(t, flags.Lookup("file-type"))
 	require.NotNil(t, flags.Lookup("limit"))
 	require.NotNil(t, flags.Lookup("path"))
 	require.NotNil(t, flags.Lookup("json"))
@@ -37,6 +38,8 @@ func TestQueryHelpShowsFlags(t *testing.T) {
 	require.NoError(t, err)
 	output := buf.String()
 	require.Contains(t, output, "--tags")
+	require.Contains(t, output, "--file-type")
+	require.Contains(t, output, "-t, --file-type")
 	require.Contains(t, output, "--limit")
 	require.Contains(t, output, "--path")
 	require.Contains(t, output, "optional indexed file or directory path to restrict results")

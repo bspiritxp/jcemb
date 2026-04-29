@@ -52,15 +52,17 @@ type persistedStore struct {
 }
 
 type persistedCollection struct {
-	CollectionID string          `json:"collection_id,omitempty"`
-	RootIdentity string          `json:"root_identity,omitempty"`
-	Provider     string          `json:"provider"`
-	Model        string          `json:"model"`
-	Splitter     string          `json:"splitter"`
-	VectorDim    int             `json:"vector_dim"`
-	DBVersion    string          `json:"db_version"`
-	CreatedAt    time.Time       `json:"created_at"`
-	Flags        map[string]bool `json:"flags,omitempty"`
+	CollectionID    string            `json:"collection_id,omitempty"`
+	RootIdentity    string            `json:"root_identity,omitempty"`
+	FileType        string            `json:"file_type,omitempty"`
+	Provider        string            `json:"provider"`
+	ProviderOptions map[string]string `json:"provider_options,omitempty"`
+	Model           string            `json:"model"`
+	Splitter        string            `json:"splitter"`
+	VectorDim       int               `json:"vector_dim"`
+	DBVersion       string            `json:"db_version"`
+	CreatedAt       time.Time         `json:"created_at"`
+	Flags           map[string]bool   `json:"flags,omitempty"`
 }
 
 type persistedFileState struct {
@@ -572,15 +574,17 @@ func readPersistedStore(path string) (persistedStore, error) {
 
 func persistedCollectionFromDomain(config domain.StoreConfig) persistedCollection {
 	return persistedCollection{
-		CollectionID: strings.TrimSpace(config.CollectionID),
-		RootIdentity: strings.TrimSpace(config.RootIdentity),
-		Provider:     strings.TrimSpace(config.Provider),
-		Model:        strings.TrimSpace(config.Model),
-		Splitter:     strings.TrimSpace(config.Splitter),
-		VectorDim:    config.VectorDim,
-		DBVersion:    strings.TrimSpace(config.DBVersion),
-		CreatedAt:    config.CreatedAt.UTC(),
-		Flags:        cloneBoolMap(config.Flags),
+		CollectionID:    strings.TrimSpace(config.CollectionID),
+		RootIdentity:    strings.TrimSpace(config.RootIdentity),
+		FileType:        strings.TrimSpace(config.FileType),
+		Provider:        strings.TrimSpace(config.Provider),
+		ProviderOptions: safeProviderOptions(config.ProviderOptions),
+		Model:           strings.TrimSpace(config.Model),
+		Splitter:        strings.TrimSpace(config.Splitter),
+		VectorDim:       config.VectorDim,
+		DBVersion:       strings.TrimSpace(config.DBVersion),
+		CreatedAt:       config.CreatedAt.UTC(),
+		Flags:           cloneBoolMap(config.Flags),
 	}
 }
 
@@ -588,7 +592,9 @@ func (p persistedCollection) toDomain(base domain.StoreConfig) domain.StoreConfi
 	config := cloneConfig(base)
 	config.CollectionID = strings.TrimSpace(p.CollectionID)
 	config.RootIdentity = strings.TrimSpace(p.RootIdentity)
+	config.FileType = strings.TrimSpace(p.FileType)
 	config.Provider = strings.TrimSpace(p.Provider)
+	config.ProviderOptions = cloneStringMap(p.ProviderOptions)
 	config.Model = strings.TrimSpace(p.Model)
 	config.Splitter = strings.TrimSpace(p.Splitter)
 	config.VectorDim = p.VectorDim
@@ -720,6 +726,24 @@ func cosineSimilarity(left []float32, right []float32) float64 {
 func cloneConfig(config domain.StoreConfig) domain.StoreConfig {
 	cloned := config
 	cloned.Flags = cloneBoolMap(config.Flags)
+	cloned.ProviderOptions = cloneStringMap(config.ProviderOptions)
+	return cloned
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func safeProviderOptions(values map[string]string) map[string]string {
+	cloned := cloneStringMap(values)
+	delete(cloned, "openai_api_key")
 	return cloned
 }
 

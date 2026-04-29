@@ -23,6 +23,12 @@ func TestLoadFromPathFallsBackToDefaultsWhenConfigIsMissing(t *testing.T) {
 	require.Equal(t, "http://localhost:11434", loaded.Settings.Ollama.URL)
 	require.Equal(t, 8, loaded.Settings.Ollama.BatchSize)
 	require.Equal(t, 30*time.Second, loaded.Settings.Ollama.Timeout)
+	require.Equal(t, "openclip", loaded.Settings.Image.Provider)
+	require.Equal(t, "ViT-B-32", loaded.Settings.Image.Model)
+	require.Equal(t, "laion2b_s34b_b79k", loaded.Settings.Image.Pretrained)
+	require.Equal(t, 512, loaded.Settings.Image.Dimensions)
+	require.Equal(t, "https://api.openai.com/v1", loaded.Settings.OpenAI.BaseURL)
+	require.Equal(t, 1536, loaded.Settings.OpenAI.Dimensions)
 }
 
 func TestLoadFromPathReturnsTypedErrorForCorruptJSON(t *testing.T) {
@@ -75,11 +81,24 @@ func TestLoadFromPathAppliesConfigOverEnvAndEnvOverBuiltins(t *testing.T) {
 	t.Setenv(envOllamaURL, "http://env-host:11434")
 	t.Setenv(envOllamaBatchSize, "12")
 	t.Setenv(envOllamaTimeout, "45s")
+	t.Setenv(envImageProvider, "openclip")
+	t.Setenv(envImageModel, "env-image-model")
+	t.Setenv(envImageDimensions, "768")
+	t.Setenv(envOpenAIAPIKey, "env-openai-key")
 
 	configPath := filepath.Join(t.TempDir(), "jcemb.json")
 	require.NoError(t, os.WriteFile(configPath, []byte(`{
 		"model": "file-model",
 		"vector_dim": 1536,
+		"openai": {
+			"base_url": "https://example.test/v1",
+			"dimensions": 512
+		},
+		"image": {
+			"provider": "jina-clip",
+			"model": "jinaai/jina-clip-v2",
+			"dimensions": 512
+		},
 		"ollama": {
 			"batch_size": 4
 		}
@@ -95,6 +114,11 @@ func TestLoadFromPathAppliesConfigOverEnvAndEnvOverBuiltins(t *testing.T) {
 	require.Equal(t, "http://env-host:11434", loaded.Settings.Ollama.URL)
 	require.Equal(t, 4, loaded.Settings.Ollama.BatchSize)
 	require.Equal(t, 45*time.Second, loaded.Settings.Ollama.Timeout)
+	require.Equal(t, "jina-clip", loaded.Settings.Image.Provider)
+	require.Equal(t, "jinaai/jina-clip-v2", loaded.Settings.Image.Model)
+	require.Equal(t, 512, loaded.Settings.Image.Dimensions)
+	require.Equal(t, "https://example.test/v1", loaded.Settings.OpenAI.BaseURL)
+	require.Equal(t, "env-openai-key", loaded.Settings.OpenAI.APIKey)
 }
 
 func TestSaveToPathExcludesTransientQueryFlags(t *testing.T) {
@@ -143,7 +167,7 @@ func TestPersistedConfigSettingsExpandsTildeDataDir(t *testing.T) {
 
 func clearConfigEnv(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{envDataDir, envProvider, envModel, envVectorDim, envOllamaURL, envOllamaBatchSize, envOllamaTimeout} {
+	for _, name := range []string{envDataDir, envProvider, envModel, envVectorDim, envOllamaURL, envOllamaBatchSize, envOllamaTimeout, envImageProvider, envImageModel, envImagePretrained, envImageDimensions, envImageDevice, envImagePython, envImageVision, envOpenAIBaseURL, envOpenAIAPIKey, envOpenAITimeout, envOpenAIBatchSize, envOpenAIDimensions} {
 		t.Setenv(name, "")
 	}
 }

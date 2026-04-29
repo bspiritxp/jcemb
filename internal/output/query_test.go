@@ -27,6 +27,7 @@ func TestRenderQueryTextIncludesStableFields(t *testing.T) {
 	require.Contains(t, output, "0.990")
 	require.Contains(t, output, "docs/guide.md")
 	require.Contains(t, output, "Guide / Intro")
+	require.Contains(t, output, "image, search")
 	require.Contains(t, output, "Hello world with extra whitespace.")
 	require.Contains(t, output, "Tags (AND): go, vector")
 }
@@ -53,6 +54,7 @@ func TestRenderQueryJSONUsesVersionedSchemaV1(t *testing.T) {
 	require.Equal(t, 0.99, payload.Results[0].Score)
 	require.Equal(t, "docs/guide.md", payload.Results[0].RelPath)
 	require.Equal(t, []string{"Guide", "Intro"}, payload.Results[0].TitlePath)
+	require.Equal(t, []string{"image", "search"}, payload.Results[0].Tags)
 	require.Equal(t, "chunk-1", payload.Results[0].ChunkID)
 	require.Equal(t, "Hello world with extra whitespace.", payload.Results[0].Preview)
 }
@@ -77,6 +79,7 @@ func sampleQueryResult() queryapp.Result {
 				Metadata: domain.ChunkMetadata{
 					RelPath:   "docs/guide.md",
 					TitlePath: []string{"Guide", "Intro"},
+					Tags:      []string{"image", "search"},
 				},
 			},
 		}},

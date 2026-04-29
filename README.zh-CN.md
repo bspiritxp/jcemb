@@ -113,7 +113,7 @@ jcemb scan /path/to/docs -r --force
 
 ### `scan`
 
-将 Markdown 文件写入统一向量库。
+将已注册文件类型写入统一向量库。内置支持 Markdown 和图片。
 
 ```bash
 jcemb scan [path] [flags]
@@ -128,7 +128,6 @@ jcemb scan [path] [flags]
 | `-m, --model` | Embedding model。默认：来自配置。 |
 | `-c, --concurccy` | 并发 worker 数量。 |
 | `--force` | 即使文件未变化，也强制重新向量化。 |
-| `-t, --type` | 文档类型。目前仅支持 `md`。 |
 
 向量数据和索引清单会存储在统一的全局目录中（例如 Linux 上的 `~/.local/share/jcemb`）。
 
@@ -146,7 +145,8 @@ jcemb query <query-text> [flags]
 |---|---|
 | `--path` | 可选：限制到已索引的文件或目录。 |
 | `-l, --limit` | 最大返回结果数。默认：`10`。 |
-| `-t, --tags` | 必须匹配的标签。多个标签使用 AND 语义。 |
+| `-t, --file-type` | 查询的文件类型。默认：`markdown`；图片搜索使用 `image`。 |
+| `--tags` | 必须匹配的标签。多个标签使用 AND 语义。 |
 | `-u, --unique` | 按 Markdown 文件去重。 |
 | `--full` | 显示完整 chunk 内容，而不是预览片段。 |
 | `--json` | 以 JSON 输出最终结果。 |
@@ -200,11 +200,11 @@ jcemb query "callback flow" --path /path/to/docs --tags architecture,gateway
 
 ## 工作原理
 
-1. `scan` 扫描 Markdown 文件，并跳过 `.git`、`node_modules` 等目录。
-2. 文档按 Markdown 结构切分为 chunks。
-3. 通过配置的 provider 和 model 生成 chunk 向量。
-4. 向量记录和版本化索引清单存储在统一的全局存储目录中。
-5. `query` 使用存储的 provider/model 配置向量化查询文本。
+1. `scan` 按注册的文件扩展名扫描 Markdown 和图片等文件，并跳过 `.git`、`node_modules` 等目录。
+2. Markdown 文档按结构切分为 chunks；图片生成一个描述记录。
+3. Markdown chunk 通过配置的 provider/model 生成向量；图片默认用 OpenCLIP 生成向量，也可配置为 Jina CLIP v2，或通过 OpenAI vision 描述再用 OpenAI text embedding 生成向量。
+4. 向量记录和版本化索引清单按根目录和文件类型存储在统一的全局存储目录中。
+5. `query` 使用已存储的文件类型配置向量化查询输入；`--file-type image` 下，已存在的图片路径会作为图搜图输入。
 6. 查询结果经过排序、阈值过滤、可选去重、MMR 多样性排序后，输出为文本或 JSON。
 
 不再创建本地 `.vectordb` 目录。如果在查询过程中检测到旧版 `.vectordb`，`jcemb` 将引导您将该路径重新向量化到统一存储中。

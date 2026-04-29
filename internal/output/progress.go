@@ -78,13 +78,23 @@ func (p *EmbedProgressBar) Update(update embed.ProgressUpdate) {
 	_, _ = p.writer.Write([]byte(line))
 }
 
-func (p *EmbedProgressBar) Finish(summary embed.Summary) {
+func (p *EmbedProgressBar) Finish(result embed.Result) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	_, _ = p.writer.Write([]byte("\n\n"))
 
 	_, _ = fmt.Fprintf(p.writer, "%s %s\n\n", Colorize(Green, "✓"), Boldf("Scan complete!"))
+	if result.CollectionCount == 1 && result.Store.CollectionID != "" {
+		_, _ = fmt.Fprintf(p.writer, "  %s  Collection: %s\n", Colorize(Cyan, "#"), Colorize(White, result.Store.CollectionID))
+	}
+	if result.CollectionCount == 1 && result.Store.Model != "" {
+		_, _ = fmt.Fprintf(p.writer, "  %s  Model:      %s\n", Colorize(Magenta, "🤖"), Colorize(White, result.Store.Model))
+	}
+	if result.CollectionCount == 1 && result.Store.VectorDim > 0 {
+		_, _ = fmt.Fprintf(p.writer, "  %s  Vector dim: %s\n", Colorize(Cyan, "◈"), Colorize(White, fmt.Sprintf("%d", result.Store.VectorDim)))
+	}
+	summary := result.Summary
 	_, _ = fmt.Fprintf(p.writer, "  %s  Processed:  %s\n", Colorize(Cyan, "▸"), Colorize(White, fmt.Sprintf("%d", summary.Processed)))
 	_, _ = fmt.Fprintf(p.writer, "  %s  Updated:    %s\n", Colorize(Yellow, "↻"), Colorize(White, fmt.Sprintf("%d", summary.Updated)))
 	_, _ = fmt.Fprintf(p.writer, "  %s  Skipped:    %s\n", Colorize(Gray, "⏭"), Colorize(White, fmt.Sprintf("%d", summary.Skipped)))

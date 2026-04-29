@@ -38,7 +38,7 @@ func TestScanAndQueryCommandsEndToEndWithOfflineFixtureProvider(t *testing.T) {
 
 	rootDir := copyFixtureTree(t, "basic")
 
-	_, _, err := executeRootCommand(t, []string{"scan", rootDir, "--provider", testProviderName, "--model", testModelName, "--recursive"})
+	_, scanStderr, err := executeRootCommand(t, []string{"scan", rootDir, "--provider", testProviderName, "--model", testModelName, "--recursive"})
 	require.NoError(t, err)
 	require.Greater(t, fixtureProviderTracker.CallCount(), 0)
 	dataRoot := config.DefaultSettings().DataDir
@@ -47,6 +47,13 @@ func TestScanAndQueryCommandsEndToEndWithOfflineFixtureProvider(t *testing.T) {
 	require.FileExists(t, filepath.Join(globalDir, index.DirectoryName, index.ConfigFileName))
 	require.FileExists(t, filepath.Join(globalDir, index.DirectoryName, index.IndexFileName))
 	require.FileExists(t, filepath.Join(globalDir, index.DirectoryName, "lancedb.records.json"))
+	snapshot, err := index.Load(rootDir)
+	require.NoError(t, err)
+	cleanScanOutput := stripANSI(scanStderr)
+	require.Contains(t, cleanScanOutput, "Scan complete!")
+	require.Contains(t, cleanScanOutput, snapshot.Config.CollectionID)
+	require.Contains(t, cleanScanOutput, testModelName)
+	require.Contains(t, cleanScanOutput, "Vector dim: 3")
 
 	textOutput, _, err := executeRootCommand(t, []string{"query", "go vector", "--path", rootDir, "--tags", "go,vector"})
 	require.NoError(t, err)
@@ -473,6 +480,25 @@ func copyFixtureTree(t *testing.T, name string) string {
 	destinationRoot := t.TempDir()
 	require.NoError(t, copyDirectory(sourceRoot, destinationRoot))
 	return destinationRoot
+}
+
+func stripANSI(s string) string {
+	var b strings.Builder
+	inEscape := false
+	for _, r := range s {
+		if inEscape {
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+				inEscape = false
+			}
+			continue
+		}
+		if r == '\033' {
+			inEscape = true
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 func copyDirectory(sourceRoot string, destinationRoot string) error {

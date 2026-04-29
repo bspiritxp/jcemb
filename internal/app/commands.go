@@ -34,6 +34,7 @@ type QueryRequest struct {
 	DataDir         string
 	Provider        string
 	ProviderOptions map[string]string
+	FileType        string
 	JSON            bool
 	Unique          bool
 	Full            bool
@@ -60,6 +61,9 @@ func RunEmbed(ctx context.Context, request EmbedRequest) (EmbedResult, error) {
 	}
 	if strings.TrimSpace(request.Model) == "" {
 		request.Model = loaded.Settings.Model
+	}
+	if request.Provider == config.OpenAIProviderName && (strings.TrimSpace(request.Model) == "" || request.Model == config.DefaultModelName) {
+		request.Model = config.OpenAIDefaultModel
 	}
 	if len(request.ProviderOptions) == 0 {
 		request.ProviderOptions = loaded.Settings.ProviderOptions(request.Provider)
@@ -113,6 +117,7 @@ func RunQuery(ctx context.Context, request QueryRequest) (QueryResult, error) {
 		DataDir:         request.DataDir,
 		Provider:        request.Provider,
 		ProviderOptions: cloneStringMap(request.ProviderOptions),
+		FileType:        request.FileType,
 		Unique:          request.Unique,
 		Full:            request.Full,
 		ThresholdAlpha:  request.ThresholdAlpha,

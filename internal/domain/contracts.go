@@ -21,6 +21,15 @@ type Document struct {
 	YAML      map[string]any
 }
 
+type SourceFile struct {
+	RootDir  string
+	FilePath string
+	RelPath  string
+	FileName string
+	DocType  string
+	ModTime  time.Time
+}
+
 type Chunk struct {
 	ID                 string
 	Document           Document
@@ -106,8 +115,10 @@ type StoreConfig struct {
 	RootIdentity    string
 	RootDir         string
 	DataDir         string
+	FileType        string
 	Namespace       string
 	Provider        string
+	ProviderOptions map[string]string
 	Model           string
 	Splitter        string
 	VectorDim       int
@@ -139,6 +150,37 @@ type FileState struct {
 	ChunkIDs      []string
 	ChunkCount    int
 	LastIndexedAt time.Time
+}
+
+type ScanProviderConfig struct {
+	FileType        string
+	DataDir         string
+	Provider        string
+	ProviderOptions map[string]string
+	Model           string
+	Recursive       bool
+	Force           bool
+}
+
+type ScanProviderRequest struct {
+	File        SourceFile
+	Config      ScanProviderConfig
+	Recipe      EmbedRecipe
+	Now         func() time.Time
+	GetProvider func(name string) (func(ProviderConfig) (EmbedderProvider, error), error)
+	GetSplitter func(name string) (func(SplitterSpec) (Splitter, error), error)
+}
+
+type ScanProviderResult struct {
+	State   FileState
+	Records []VectorRecord
+}
+
+type ScanProvider interface {
+	FileType() string
+	Extensions() []string
+	Recipe(ScanProviderConfig) EmbedRecipe
+	BuildRecords(context.Context, ScanProviderRequest) (ScanProviderResult, error)
 }
 
 type Splitter interface {

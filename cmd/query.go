@@ -12,6 +12,7 @@ type QueryOptions struct {
 	Tags           []string
 	Limit          int
 	Path           string
+	FileType       string
 	JSON           bool
 	Unique         bool
 	Full           bool
@@ -27,7 +28,8 @@ func NewQueryCmd() *cobra.Command {
 
 func newQueryCmd(bootstrap app.Bootstrap) *cobra.Command {
 	options := QueryOptions{
-		Limit: 10,
+		Limit:    10,
+		FileType: "markdown",
 	}
 
 	cmd := &cobra.Command{
@@ -55,6 +57,7 @@ func newQueryCmd(bootstrap app.Bootstrap) *cobra.Command {
 				DataDir:         bootstrap.Config.Settings.DataDir,
 				Provider:        bootstrap.Config.Settings.Provider,
 				ProviderOptions: bootstrap.Config.Settings.ProviderOptions(bootstrap.Config.Settings.Provider),
+				FileType:        options.FileType,
 				JSON:            options.JSON,
 				Unique:          options.Unique,
 				Full:            options.Full,
@@ -66,7 +69,8 @@ func newQueryCmd(bootstrap app.Bootstrap) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringSliceVarP(&options.Tags, "tags", "t", nil, "required tags filter")
+	cmd.Flags().StringSliceVar(&options.Tags, "tags", nil, "required tags filter")
+	cmd.Flags().StringVarP(&options.FileType, "file-type", "t", options.FileType, "file type to query")
 	cmd.Flags().IntVarP(&options.Limit, "limit", "l", options.Limit, "maximum number of results")
 	cmd.Flags().StringVar(&options.Path, "path", options.Path, "optional indexed file or directory path to restrict results")
 	cmd.Flags().BoolVar(&options.JSON, "json", options.JSON, "output results as JSON")
