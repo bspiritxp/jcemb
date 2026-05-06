@@ -113,6 +113,18 @@ func TestOllamaCaptionImageContentConvertsWebPToPNG(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestOllamaCaptionImageContentConvertsWebPWithPNGExtension(t *testing.T) {
+	content, err := base64.StdEncoding.DecodeString("UklGRjwAAABXRUJQVlA4IDAAAADQAQCdASoCAAIAAgA0JaACdLoB+AADsAD+8MQL/yC5YXXI1/8gP+QH/ID/+PIAAAA=")
+	require.NoError(t, err)
+
+	converted, err := ollamaCaptionImageContent("mislabeled.png", content)
+
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(string(converted), "\x89PNG\r\n\x1a\n"))
+	_, err = png.Decode(bytes.NewReader(converted))
+	require.NoError(t, err)
+}
+
 func TestOllamaCaptionImageContentRejectsSVG(t *testing.T) {
 	_, err := ollamaCaptionImageContent("diagram.svg", []byte("<svg></svg>"))
 

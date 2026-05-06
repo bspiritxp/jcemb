@@ -9,6 +9,7 @@ import (
 
 	embedapp "github.com/bspiritxp/jcemb/internal/app/embed"
 	queryapp "github.com/bspiritxp/jcemb/internal/app/query"
+	showapp "github.com/bspiritxp/jcemb/internal/app/show"
 	"github.com/bspiritxp/jcemb/internal/config"
 	"github.com/bspiritxp/jcemb/internal/output"
 )
@@ -47,6 +48,13 @@ type QueryRequest struct {
 type EmbedResult = embedapp.Result
 
 type QueryResult = queryapp.Result
+
+type ShowRequest struct {
+	FilePath string
+	DataDir  string
+}
+
+type ShowResult = showapp.Result
 
 func RunEmbed(ctx context.Context, request EmbedRequest) (EmbedResult, error) {
 	loaded, err := config.Load()
@@ -147,4 +155,27 @@ func Query(request QueryRequest) error {
 		return output.RenderQueryJSON(os.Stdout, result)
 	}
 	return output.RenderQueryText(os.Stdout, result)
+}
+
+func RunShow(request ShowRequest) (ShowResult, error) {
+	loaded, err := config.Load()
+	if err != nil {
+		return ShowResult{}, err
+	}
+	if strings.TrimSpace(request.DataDir) == "" {
+		request.DataDir = loaded.Settings.DataDir
+	}
+	service := showapp.NewService(showapp.Dependencies{})
+	return service.Run(context.Background(), showapp.Request{
+		FilePath: request.FilePath,
+		DataDir:  request.DataDir,
+	})
+}
+
+func Show(request ShowRequest) error {
+	result, err := RunShow(request)
+	if err != nil {
+		return err
+	}
+	return output.RenderShowText(os.Stdout, result)
 }

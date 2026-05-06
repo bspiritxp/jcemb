@@ -40,23 +40,25 @@ var (
 )
 
 type Provider struct {
-	config    domain.ProviderConfig
-	client    embeddingClient
-	baseURL   string
-	apiKey    string
-	batchSize int
-	timeout   time.Duration
-	dimension int
+	config            domain.ProviderConfig
+	client            embeddingClient
+	baseURL           string
+	apiKey            string
+	batchSize         int
+	timeout           time.Duration
+	dimension         int
+	inputTypeOverride string
 }
 
 type Embedder struct {
-	provider  string
-	model     domain.ModelSpec
-	client    embeddingClient
-	baseURL   string
-	apiKey    string
-	batchSize int
-	dimension int
+	provider          string
+	model             domain.ModelSpec
+	client            embeddingClient
+	baseURL           string
+	apiKey            string
+	batchSize         int
+	dimension         int
+	inputTypeOverride string
 }
 
 type embeddingClient interface {
@@ -67,6 +69,7 @@ type embedAPIRequest struct {
 	Model      string   `json:"model"`
 	Input      []string `json:"input"`
 	Dimensions int      `json:"dimensions,omitempty"`
+	InputType  string   `json:"input_type,omitempty"`
 }
 
 type embedAPIResponse struct {
@@ -106,13 +109,14 @@ func newProvider(config domain.ProviderConfig, client embeddingClient) (*Provide
 		return nil, err
 	}
 	return &Provider{
-		config:    normalized,
-		client:    client,
-		baseURL:   baseURL,
-		apiKey:    apiKey,
-		batchSize: batchSize,
-		timeout:   timeout,
-		dimension: dimension,
+		config:            normalized,
+		client:            client,
+		baseURL:           baseURL,
+		apiKey:            apiKey,
+		batchSize:         batchSize,
+		timeout:           timeout,
+		dimension:         dimension,
+		inputTypeOverride: normalized.Options[OptionInputType],
 	}, nil
 }
 
@@ -126,13 +130,14 @@ func (p *Provider) NewEmbedder(model domain.ModelSpec) (domain.Embedder, error) 
 		return nil, err
 	}
 	return &Embedder{
-		provider:  Name,
-		model:     normalized,
-		client:    p.client,
-		baseURL:   p.baseURL,
-		apiKey:    p.apiKey,
-		batchSize: p.batchSize,
-		dimension: p.dimension,
+		provider:          Name,
+		model:             normalized,
+		client:            p.client,
+		baseURL:           p.baseURL,
+		apiKey:            p.apiKey,
+		batchSize:         p.batchSize,
+		dimension:         p.dimension,
+		inputTypeOverride: p.inputTypeOverride,
 	}, nil
 }
 
@@ -179,6 +184,7 @@ func (e *Embedder) Embed(ctx context.Context, request domain.EmbedRequest) ([]do
 			Model:      e.model.Name,
 			Input:      texts,
 			Dimensions: e.model.Dimensions,
+			InputType:  ResolveInputType(e.model.Name, request.Purpose, e.inputTypeOverride),
 		})
 		if err != nil {
 			return nil, err
@@ -248,6 +254,11 @@ func normalizeProviderConfig(input domain.ProviderConfig) (domain.ProviderConfig
 	normalized.Options[OptionBatchSize] = strconv.Itoa(batchSize)
 	normalized.Options[OptionTimeout] = timeout.String()
 	normalized.Options[OptionDimension] = strconv.Itoa(dimension)
+	if inputType := strings.TrimSpace(normalized.Options[OptionInputType]); inputType != "" {
+		normalized.Options[OptionInputType] = inputType
+	} else {
+		delete(normalized.Options, OptionInputType)
+	}
 	return normalized, baseURL, apiKey, batchSize, timeout, dimension, nil
 }
 

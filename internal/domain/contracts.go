@@ -46,9 +46,24 @@ type EmbedInput struct {
 	Metadata ChunkMetadata
 }
 
+// EmbedPurpose 描述本次 embedding 调用的语义意图，部分 provider 会根据它
+// 调整请求参数（例如 Voyage / Jina 的 input_type）。零值表示未指定，
+// provider 应该回退到自己的默认行为。
+type EmbedPurpose string
+
+const (
+	// EmbedPurposeUnspecified 表示调用方未给出语义信息。
+	EmbedPurposeUnspecified EmbedPurpose = ""
+	// EmbedPurposeDocument 表示输入是被索引的文档片段（写侧）。
+	EmbedPurposeDocument EmbedPurpose = "document"
+	// EmbedPurposeQuery 表示输入是用户的检索查询（读侧）。
+	EmbedPurposeQuery EmbedPurpose = "query"
+)
+
 type EmbedRequest struct {
-	Recipe EmbedRecipe
-	Inputs []EmbedInput
+	Recipe  EmbedRecipe
+	Inputs  []EmbedInput
+	Purpose EmbedPurpose
 }
 
 type Embedding struct {
@@ -206,6 +221,7 @@ type VectorStore interface {
 	DeleteFileState(ctx context.Context, relPath string) error
 	Snapshot(ctx context.Context) (StoreConfig, []FileState, error)
 	Search(ctx context.Context, query SearchQuery) ([]SearchResult, error)
+	FindBySource(ctx context.Context, source string) ([]VectorRecord, error)
 	Close() error
 }
 

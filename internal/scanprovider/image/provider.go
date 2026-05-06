@@ -10,18 +10,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	_ "image/gif"
+	_ "image/jpeg"
 	"image/png"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
-	"maps"
-	"slices"
 
 	"github.com/bspiritxp/jcemb/internal/domain"
 	_ "golang.org/x/image/bmp"
@@ -516,11 +518,16 @@ func captionText(caption Caption) string {
 }
 
 func ollamaCaptionImageContent(path string, content []byte) ([]byte, error) {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".png", ".jpg", ".jpeg":
-		return content, nil
-	case ".svg":
+	if strings.EqualFold(filepath.Ext(path), ".svg") {
 		return nil, fmt.Errorf("image: Ollama caption does not support SVG input; use image.provider=openai or convert %s to a raster image", path)
+	}
+
+	_, format, err := image.DecodeConfig(bytes.NewReader(content))
+	if err != nil {
+		return nil, fmt.Errorf("image: detect %s for Ollama caption: %w", path, err)
+	}
+	if format == "png" || format == "jpeg" {
+		return content, nil
 	}
 
 	decoded, _, err := image.Decode(bytes.NewReader(content))

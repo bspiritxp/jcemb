@@ -206,6 +206,10 @@ func (s stubVectorStore) Search(ctx context.Context, query domain.SearchQuery) (
 	return nil, nil
 }
 
+func (s stubVectorStore) FindBySource(ctx context.Context, source string) ([]domain.VectorRecord, error) {
+	return nil, nil
+}
+
 func (s stubVectorStore) Close() error {
 	return nil
 }

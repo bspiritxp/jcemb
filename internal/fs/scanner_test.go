@@ -152,7 +152,6 @@ func TestScanMarkdownGitIgnoreFiltersFilesAndDirectories(t *testing.T) {
 	require.ElementsMatch(t, []string{
 		filepath.ToSlash(filepath.Join(root, "docs", "guide.md")),
 		filepath.ToSlash(filepath.Join(root, "keep.md")),
-		filepath.ToSlash(filepath.Join(root, "node_modules", "pkg", "kept.md")),
 	}, relPaths)
 }
 
@@ -221,4 +220,67 @@ func TestScanMarkdownWithoutGitIgnoreUsesDefaultIgnoreList(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, files, 1)
 	require.Equal(t, filepath.ToSlash(filepath.Join(root, "root.md")), files[0].RelPath)
+}
+
+func TestScanMarkdownIgnoresRecycleBinAndSystemDirectories(t *testing.T) {
+	root := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(root, "root.md"), []byte("# root"), 0o644))
+	for _, dir := range []string{
+		"$RECYCLE.BIN",
+		"RECYCLER",
+		"System Volume Information",
+		".Trashes",
+		".Trash",
+		".Trash-1000",
+		".Trash-501",
+		".fseventsd",
+		".Spotlight-V100",
+		".DocumentRevisions-V100",
+		".TemporaryItems",
+	} {
+		require.NoError(t, os.MkdirAll(filepath.Join(root, dir), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(root, dir, "leak.md"), []byte("# leak"), 0o644))
+	}
+
+	files, err := ScanMarkdown(ScanOptions{RootPath: root, Recursive: true})
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	require.Equal(t, filepath.ToSlash(filepath.Join(root, "root.md")), files[0].RelPath)
+}
+
+func TestScanMarkdownIgnoredDirectoryNamesAreCaseInsensitive(t *testing.T) {
+	root := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(root, "root.md"), []byte("# root"), 0o644))
+	for _, dir := range []string{
+		"$Recycle.Bin",
+		".trashes",
+		"system volume INFORMATION",
+		".TRASH-1000",
+	} {
+		require.NoError(t, os.MkdirAll(filepath.Join(root, dir), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(root, dir, "leak.md"), []byte("# leak"), 0o644))
+	}
+
+	files, err := ScanMarkdown(ScanOptions{RootPath: root, Recursive: true})
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	require.Equal(t, filepath.ToSlash(filepath.Join(root, "root.md")), files[0].RelPath)
+}
+
+func TestScanMarkdownDefaultIgnoreListAlsoAppliesAlongsideGitIgnore(t *testing.T) {
+	root := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(root, "keep.md"), []byte("# keep"), 0o644))
+	for _, dir := range []string{".git", "node_modules", "$RECYCLE.BIN", ".Trash-1000"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(root, dir), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(root, dir, "leak.md"), []byte("# leak"), 0o644))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".gitignore"), []byte("# user gitignore present\n"), 0o644))
+
+	files, err := ScanMarkdown(ScanOptions{RootPath: root, Recursive: true})
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	require.Equal(t, filepath.ToSlash(filepath.Join(root, "keep.md")), files[0].RelPath)
 }

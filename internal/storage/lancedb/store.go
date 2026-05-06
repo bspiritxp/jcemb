@@ -311,6 +311,33 @@ func (s *Store) Search(ctx context.Context, query domain.SearchQuery) ([]domain.
 	return sorted, nil
 }
 
+func (s *Store) FindBySource(ctx context.Context, source string) ([]domain.VectorRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	trimmedSource := strings.TrimSpace(source)
+	if trimmedSource == "" {
+		return nil, fmt.Errorf("lancedb: source is required")
+	}
+
+	s.mu.RLock()
+	if !s.initialized {
+		s.mu.RUnlock()
+		return nil, ErrVectorDBNotFound
+	}
+
+	results := make([]domain.VectorRecord, 0)
+	for _, record := range s.records {
+		if record.Chunk.Metadata.Source == trimmedSource {
+			results = append(results, cloneVectorRecord(record))
+		}
+	}
+	s.mu.RUnlock()
+
+	return results, nil
+}
+
 func (s *Store) Close() error {
 	return nil
 }

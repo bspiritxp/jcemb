@@ -37,6 +37,7 @@ const (
 	envOpenAITimeout    = "JCEMB_OPENAI_TIMEOUT"
 	envOpenAIBatchSize  = "JCEMB_OPENAI_BATCH_SIZE"
 	envOpenAIDimensions = "JCEMB_OPENAI_DIMENSIONS"
+	envOpenAIInputType  = "JCEMB_OPENAI_INPUT_TYPE"
 )
 
 type DefaultsConfig struct {
@@ -78,6 +79,7 @@ type OpenAIConfig struct {
 	BatchSize  int
 	Timeout    time.Duration
 	Dimensions int
+	InputType  string
 }
 
 type ImageConfig struct {
@@ -137,6 +139,9 @@ func (s Settings) ProviderOptions(provider string) map[string]string {
 		options["openai_batch_size"] = strconv.Itoa(s.OpenAI.BatchSize)
 		options["openai_timeout"] = s.OpenAI.Timeout.String()
 		options["openai_dimensions"] = strconv.Itoa(s.OpenAI.Dimensions)
+		if value := strings.TrimSpace(s.OpenAI.InputType); value != "" {
+			options["openai_input_type"] = value
+		}
 	}
 	return options
 }
@@ -247,6 +252,9 @@ func applyEnvOverrides(base Settings) Settings {
 		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
 			resolved.OpenAI.Dimensions = parsed
 		}
+	}
+	if value := strings.TrimSpace(os.Getenv(envOpenAIInputType)); value != "" {
+		resolved.OpenAI.InputType = value
 	}
 	applyProviderDefaults(&resolved)
 

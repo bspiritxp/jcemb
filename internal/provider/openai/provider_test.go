@@ -89,6 +89,95 @@ func TestEmbedUsesFakeClientAndBatches(t *testing.T) {
 	}, result)
 }
 
+func TestEmbedSendsInputTypeForVoyage(t *testing.T) {
+	t.Parallel()
+
+	var captured []embedAPIRequest
+	provider := newTestProvider(t, domain.ProviderConfig{Name: Name, Options: map[string]string{
+		OptionAPIKey:    "sk-test",
+		OptionBatchSize: "8",
+		OptionDimension: "4",
+	}}, fakeEmbeddingClient{
+		embedFunc: func(ctx context.Context, baseURL string, apiKey string, request embedAPIRequest) (embedAPIResponse, error) {
+			captured = append(captured, request)
+			return embedAPIResponse{Data: []embeddingData{{Index: 0, Embedding: []float32{1, 2, 3, 4}}}}, nil
+		},
+	})
+	embedder, err := provider.NewEmbedder(domain.ModelSpec{Provider: Name, Name: "voyage/voyage-4"})
+	require.NoError(t, err)
+
+	_, err = embedder.Embed(context.Background(), domain.EmbedRequest{
+		Recipe:  domain.EmbedRecipe{Provider: domain.ProviderConfig{Name: Name}, Model: domain.ModelSpec{Provider: Name, Name: "voyage/voyage-4"}},
+		Purpose: domain.EmbedPurposeQuery,
+		Inputs:  []domain.EmbedInput{{ChunkID: "q1", Text: "hello"}},
+	})
+	require.NoError(t, err)
+	require.Len(t, captured, 1)
+	require.Equal(t, InputTypeQuery, captured[0].InputType)
+
+	captured = nil
+	_, err = embedder.Embed(context.Background(), domain.EmbedRequest{
+		Recipe:  domain.EmbedRecipe{Provider: domain.ProviderConfig{Name: Name}, Model: domain.ModelSpec{Provider: Name, Name: "voyage/voyage-4"}},
+		Purpose: domain.EmbedPurposeDocument,
+		Inputs:  []domain.EmbedInput{{ChunkID: "d1", Text: "doc"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, InputTypeDocument, captured[0].InputType)
+}
+
+func TestEmbedDoesNotSendInputTypeForNativeOpenAIModel(t *testing.T) {
+	t.Parallel()
+
+	var captured []embedAPIRequest
+	provider := newTestProvider(t, domain.ProviderConfig{Name: Name, Options: map[string]string{
+		OptionAPIKey:    "sk-test",
+		OptionBatchSize: "8",
+		OptionDimension: "4",
+	}}, fakeEmbeddingClient{
+		embedFunc: func(ctx context.Context, baseURL string, apiKey string, request embedAPIRequest) (embedAPIResponse, error) {
+			captured = append(captured, request)
+			return embedAPIResponse{Data: []embeddingData{{Index: 0, Embedding: []float32{1, 2, 3, 4}}}}, nil
+		},
+	})
+	embedder, err := provider.NewEmbedder(domain.ModelSpec{Provider: Name, Name: DefaultModel})
+	require.NoError(t, err)
+
+	_, err = embedder.Embed(context.Background(), domain.EmbedRequest{
+		Recipe:  domain.EmbedRecipe{Provider: domain.ProviderConfig{Name: Name}, Model: domain.ModelSpec{Provider: Name, Name: DefaultModel}},
+		Purpose: domain.EmbedPurposeQuery,
+		Inputs:  []domain.EmbedInput{{ChunkID: "q1", Text: "hello"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "", captured[0].InputType)
+}
+
+func TestEmbedRespectsInputTypeOverride(t *testing.T) {
+	t.Parallel()
+
+	var captured []embedAPIRequest
+	provider := newTestProvider(t, domain.ProviderConfig{Name: Name, Options: map[string]string{
+		OptionAPIKey:    "sk-test",
+		OptionBatchSize: "8",
+		OptionDimension: "4",
+		OptionInputType: "off",
+	}}, fakeEmbeddingClient{
+		embedFunc: func(ctx context.Context, baseURL string, apiKey string, request embedAPIRequest) (embedAPIResponse, error) {
+			captured = append(captured, request)
+			return embedAPIResponse{Data: []embeddingData{{Index: 0, Embedding: []float32{1, 2, 3, 4}}}}, nil
+		},
+	})
+	embedder, err := provider.NewEmbedder(domain.ModelSpec{Provider: Name, Name: "voyage-4"})
+	require.NoError(t, err)
+
+	_, err = embedder.Embed(context.Background(), domain.EmbedRequest{
+		Recipe:  domain.EmbedRecipe{Provider: domain.ProviderConfig{Name: Name}, Model: domain.ModelSpec{Provider: Name, Name: "voyage-4"}},
+		Purpose: domain.EmbedPurposeQuery,
+		Inputs:  []domain.EmbedInput{{ChunkID: "q1", Text: "hello"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "", captured[0].InputType, "override=off must suppress input_type even for voyage models")
+}
+
 func TestHTTPEmbeddingClientMapsErrors(t *testing.T) {
 	t.Parallel()
 

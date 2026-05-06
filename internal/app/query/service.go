@@ -301,7 +301,8 @@ func (s *Service) embedQuery(ctx context.Context, config domain.StoreConfig, req
 				Name:     config.Model,
 			},
 		},
-		Inputs: []domain.EmbedInput{{ChunkID: queryChunkID, Text: request.Text}},
+		Purpose: domain.EmbedPurposeQuery,
+		Inputs:  []domain.EmbedInput{{ChunkID: queryChunkID, Text: request.Text}},
 	})
 	if err != nil {
 		return nil, err

@@ -172,6 +172,20 @@ global store. When `--path` points to a file or directory, `jcemb` resolves the
 collection identity and filters results by the relative path prefix; directory
 paths include all descendants.
 
+### `show`
+
+Show vector store information for a specific file: tags, vector length, collection ID, provider, model, and chunk details.
+
+```bash
+jcemb show <file-path> [flags]
+```
+
+| Flag | Description |
+|---|---|
+| `--json` | Output as JSON. |
+
+When the file is not found in any indexed collection, it prints a "not found" message (or `{"found": false}` in JSON mode).
+
 ### `config`
 
 Interactively edit the persisted `jcemb` configuration.

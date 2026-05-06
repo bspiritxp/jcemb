@@ -158,6 +158,20 @@ jcemb query <query-text> [flags]
 省略 `--path` 时，`query` 会搜索全局存储中的所有已索引集合。指定
 `--path` 时，它可以指向文件或目录；`jcemb` 会解析集合身份，并按相对路径前缀过滤结果，目录路径会包含其所有后代文件。
 
+### `show`
+
+显示指定文件在向量库中的信息：标签、向量长度、集合 ID、provider、model 以及 chunk 详情。
+
+```bash
+jcemb show <file-path> [flags]
+```
+
+| 参数 | 说明 |
+|---|---|
+| `--json` | 以 JSON 输出结果。 |
+
+如果文件不在任何已索引的集合中，会显示"未找到"（JSON 模式下输出 `{"found": false}`）。
+
 ### `config`
 
 交互式编辑持久化的 `jcemb` 配置。

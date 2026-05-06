@@ -46,6 +46,7 @@ type PersistedOpenAIConfig struct {
 	BatchSize  int    `json:"batch_size"`
 	Timeout    string `json:"timeout"`
 	Dimensions int    `json:"dimensions"`
+	InputType  string `json:"input_type,omitempty"`
 }
 
 type PersistedImageConfig struct {
@@ -80,6 +81,7 @@ type fileOpenAIConfig struct {
 	BatchSize  *int    `json:"batch_size,omitempty"`
 	Timeout    *string `json:"timeout,omitempty"`
 	Dimensions *int    `json:"dimensions,omitempty"`
+	InputType  *string `json:"input_type,omitempty"`
 }
 
 type fileImageConfig struct {
@@ -219,6 +221,9 @@ func (c PersistedConfig) Settings() (Settings, error) {
 	if c.OpenAI.Dimensions > 0 {
 		openAISettings.Dimensions = c.OpenAI.Dimensions
 	}
+	if strings.TrimSpace(c.OpenAI.InputType) != "" {
+		openAISettings.InputType = strings.TrimSpace(c.OpenAI.InputType)
+	}
 	openAISettings.Timeout = openAITimeout
 
 	settings := Settings{
@@ -313,6 +318,9 @@ func mergeFileConfig(base Settings, patch fileConfig) (Settings, error) {
 		}
 		if patch.OpenAI.Dimensions != nil {
 			resolved.OpenAI.Dimensions = *patch.OpenAI.Dimensions
+		}
+		if patch.OpenAI.InputType != nil {
+			resolved.OpenAI.InputType = strings.TrimSpace(*patch.OpenAI.InputType)
 		}
 	}
 	if patch.Image != nil {
@@ -459,6 +467,7 @@ func persistedFromSettings(settings Settings) PersistedConfig {
 			BatchSize:  settings.OpenAI.BatchSize,
 			Timeout:    settings.OpenAI.Timeout.String(),
 			Dimensions: settings.OpenAI.Dimensions,
+			InputType:  settings.OpenAI.InputType,
 		},
 		Image: PersistedImageConfig{
 			Provider:    settings.Image.Provider,

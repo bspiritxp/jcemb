@@ -27,6 +27,10 @@ go build -o jcemb .
 ./jcemb query "red bicycle" --file-type image
 ./jcemb query ./query.png --file-type image
 
+# Show vector store info for a specific file
+./jcemb show /path/to/docs/readme.md
+./jcemb show /path/to/image.png --json
+
 # JSON output
 ./jcemb query "search text" --path /path/to/docs --json
 ```
@@ -73,7 +77,7 @@ both package repositories.
 |---|---|
 | `main.go` | Minimal entrypoint; only calls `cmd.Execute()` |
 | `cmd/` | Cobra command layer: flag parsing, thin dispatch. No business logic. |
-| `internal/app/` | Service orchestration (`scan`, `query`) |
+| `internal/app/` | Service orchestration (`scan`, `query`, `show`) |
 | `internal/domain/` | Core contracts: `Document`, `Chunk`, `VectorStore`, `Embedder`, etc. |
 | `internal/registry/` | Self-registration factories for provider / splitter / vector store / scan provider |
 | `internal/provider/ollama/` | Default embedding provider (HTTP to local Ollama) |
@@ -81,7 +85,7 @@ both package repositories.
 | `internal/splitter/markdown/` | Markdown structural splitter (headings → chunks) |
 | `internal/storage/lancedb/` | Local vector store adapter (JSON file, not real LanceDB) |
 | `internal/index/` | Versioned atomic JSON index (`config.json` + `index.json`) |
-| `internal/fs/` | File discovery; skips `.git`, `node_modules`, and common hidden tool directories by default |
+| `internal/fs/` | File discovery; skips `.git`, `node_modules`, IDE/tool dirs, and OS recycle-bin / system metadata dirs (case-insensitive) — see `defaultIgnoredDirectoryNames` |
 | `internal/metadata/` | YAML front matter extraction |
 | `internal/output/` | Text / JSON query result rendering |
 | `internal/testkit/` | Fake store, integration gate, test helpers |
@@ -147,4 +151,4 @@ func init() {
 - `lancedb` here is a **local JSON-file adapter**, not the real LanceDB server/SDK.
 - `scan` discovers registered extensions automatically; do not add new user-facing scan file-type flags.
 - Do not put business logic in `cmd/` or `main.go`; keep commands thin.
-- Scanner skips `.git`, `node_modules`, and common hidden tool directories automatically when no `.gitignore` is present.
+- Scanner always skips a built-in list of directory names regardless of `.gitignore`: `.git`, `node_modules`, IDE dirs (`.idea`, `.vscode`, `.claude`, `.codex`, `.obsidian`), Windows recycle/system dirs (`$RECYCLE.BIN`, `RECYCLER`, `System Volume Information`), and macOS/Linux trash + metadata dirs (`.Trashes`, `.Trash`, `.Trash-<uid>`, `.fseventsd`, `.Spotlight-V100`, `.DocumentRevisions-V100`, `.TemporaryItems`). Matching is case-insensitive. `.gitignore` rules apply on top of this list, never replace it.

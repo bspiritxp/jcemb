@@ -103,7 +103,7 @@ func (Provider) BuildRecords(ctx context.Context, request domain.ScanProviderReq
 			chunk.Document.DocType = FileType
 			inputs = append(inputs, domain.EmbedInput{ChunkID: chunk.ID, Text: chunk.Content, Metadata: chunk.Metadata})
 		}
-		embeddings, err := embedder.Embed(ctx, domain.EmbedRequest{Recipe: request.Recipe, Inputs: inputs})
+		embeddings, err := embedder.Embed(ctx, domain.EmbedRequest{Recipe: request.Recipe, Inputs: inputs, Purpose: domain.EmbedPurposeDocument})
 		if err != nil {
 			return domain.ScanProviderResult{}, err
 		}

@@ -17,14 +17,55 @@ const (
 	gitIgnoreFileName = ".gitignore"
 )
 
-var defaultIgnoredDirectories = map[string]struct{}{
-	".claude":      {},
-	".codex":       {},
-	".git":         {},
-	".idea":        {},
-	".obsidian":    {},
-	".vscode":      {},
-	"node_modules": {},
+var defaultIgnoredDirectoryNames = []string{
+	".claude",
+	".codex",
+	".git",
+	".idea",
+	".obsidian",
+	".vscode",
+	"node_modules",
+
+	"$RECYCLE.BIN",
+	"RECYCLER",
+	"System Volume Information",
+
+	".Trashes",
+	".Trash",
+	".fseventsd",
+	".Spotlight-V100",
+	".DocumentRevisions-V100",
+	".TemporaryItems",
+}
+
+// defaultIgnoredDirectoryPrefixes 匹配那些带可变后缀的回收站/系统目录名
+// （例如 Linux XDG 回收站会以 ".Trash-1000" 形式按 UID 命名）。
+// 比较时一律小写化，所以这些常量本身用小写即可。
+var defaultIgnoredDirectoryPrefixes = []string{
+	".trash-",
+}
+
+var defaultIgnoredDirectorySet = buildIgnoredDirectorySet(defaultIgnoredDirectoryNames)
+
+func buildIgnoredDirectorySet(names []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		set[strings.ToLower(name)] = struct{}{}
+	}
+	return set
+}
+
+func isDefaultIgnoredDirectory(name string) bool {
+	lowered := strings.ToLower(name)
+	if _, ok := defaultIgnoredDirectorySet[lowered]; ok {
+		return true
+	}
+	for _, prefix := range defaultIgnoredDirectoryPrefixes {
+		if strings.HasPrefix(lowered, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 type ScanOptions struct {
@@ -211,9 +252,11 @@ func loadGitIgnoreMatcher(rootPath string) (gitignore.GitIgnore, error) {
 }
 
 func shouldIgnoreDirectory(rootPath, currentPath, name string, matcher gitignore.GitIgnore) bool {
+	if isDefaultIgnoredDirectory(name) {
+		return true
+	}
 	if matcher == nil {
-		_, ignored := defaultIgnoredDirectories[name]
-		return ignored
+		return false
 	}
 
 	rel, ok := relativeSlashPath(rootPath, currentPath)

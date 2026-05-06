@@ -1021,6 +1021,10 @@ func (s *recordingVectorStore) Search(_ context.Context, query domain.SearchQuer
 	return append([]domain.SearchResult(nil), s.results...), nil
 }
 
+func (s *recordingVectorStore) FindBySource(_ context.Context, _ string) ([]domain.VectorRecord, error) {
+	return nil, nil
+}
+
 func (s *recordingVectorStore) Close() error {
 	return nil
 }
