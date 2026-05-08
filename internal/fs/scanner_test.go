@@ -97,6 +97,35 @@ func TestScanFilesUsesRegisteredExtensions(t *testing.T) {
 	require.Equal(t, "image", files[1].DocType)
 }
 
+func TestScanFilesFiltersExtensionsAndExcludePatterns(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "docs"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "docs", "keep.md"), []byte("# keep"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "docs", "drop.md"), []byte("# drop"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "docs", "image.png"), []byte("png"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "docs", "notes.txt"), []byte("txt"), 0o644))
+
+	files, err := ScanFiles(ScanOptions{
+		RootPath:        root,
+		Recursive:       true,
+		ExcludePatterns: []string{"docs/drop.md"},
+		Extensions: map[string]string{
+			".md":  "markdown",
+			".png": "image",
+		},
+	})
+	require.NoError(t, err)
+
+	relPaths := make([]string, 0, len(files))
+	for _, file := range files {
+		relPaths = append(relPaths, file.RelPath)
+	}
+	require.ElementsMatch(t, []string{
+		filepath.ToSlash(filepath.Join(root, "docs", "image.png")),
+		filepath.ToSlash(filepath.Join(root, "docs", "keep.md")),
+	}, relPaths)
+}
+
 func TestScanMarkdownNonRecursiveOnlyReadsTopLevelMarkdown(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, "root.md"), []byte("# root"), 0o644))
@@ -283,4 +312,31 @@ func TestScanMarkdownDefaultIgnoreListAlsoAppliesAlongsideGitIgnore(t *testing.T
 	require.NoError(t, err)
 	require.Len(t, files, 1)
 	require.Equal(t, filepath.ToSlash(filepath.Join(root, "keep.md")), files[0].RelPath)
+}
+
+func TestScanMarkdownExcludePatternsApplyOnTopOfGitIgnore(t *testing.T) {
+	root := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "docs"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "keep.md"), []byte("# keep"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "draft.md"), []byte("# draft"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "docs", "drop.md"), []byte("# drop"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "docs", "keep.md"), []byte("# keep"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".gitignore"), []byte("draft.md\n"), 0o644))
+
+	files, err := ScanMarkdown(ScanOptions{
+		RootPath:        root,
+		Recursive:       true,
+		ExcludePatterns: []string{"docs/drop.md"},
+	})
+	require.NoError(t, err)
+
+	relPaths := make([]string, 0, len(files))
+	for _, file := range files {
+		relPaths = append(relPaths, file.RelPath)
+	}
+	require.ElementsMatch(t, []string{
+		filepath.ToSlash(filepath.Join(root, "docs", "keep.md")),
+		filepath.ToSlash(filepath.Join(root, "keep.md")),
+	}, relPaths)
 }

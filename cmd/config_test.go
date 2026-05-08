@@ -28,7 +28,7 @@ func TestConfigHelpShowsInteractiveDescription(t *testing.T) {
 	err := cmd.Execute()
 	require.NoError(t, err)
 	output := buf.String()
-	require.Contains(t, output, "Interactively edit the persisted jcemb config")
+	require.Contains(t, output, "interactively edit the persisted jcemb config")
 	require.Contains(t, output, "config")
 }
 

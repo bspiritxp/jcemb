@@ -166,6 +166,10 @@ func SaveToPath(path string, config PersistedConfig) error {
 	return nil
 }
 
+func PersistedFromSettings(settings Settings) PersistedConfig {
+	return persistedFromSettings(settings)
+}
+
 func (c PersistedConfig) Settings() (Settings, error) {
 	defaults := DefaultSettings()
 	timeout, err := time.ParseDuration(strings.TrimSpace(c.Ollama.Timeout))

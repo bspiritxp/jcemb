@@ -20,6 +20,8 @@ func TestNewScanCmd(t *testing.T) {
 	require.NotNil(t, flags.Lookup("model"))
 	require.NotNil(t, flags.Lookup("recursive"))
 	require.NotNil(t, flags.Lookup("force"))
+	require.NotNil(t, flags.Lookup("exclude-pattern"))
+	require.NotNil(t, flags.Lookup("ext"))
 }
 
 func TestScanHelpShowsFlags(t *testing.T) {
@@ -38,4 +40,7 @@ func TestScanHelpShowsFlags(t *testing.T) {
 	require.Contains(t, output, "--model")
 	require.Contains(t, output, "--recursive")
 	require.Contains(t, output, "--force")
+	require.Contains(t, output, "--exclude-pattern")
+	require.Contains(t, output, "--ext")
+	require.Contains(t, output, "-e, --ext")
 }

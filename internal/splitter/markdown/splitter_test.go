@@ -2,6 +2,7 @@ package markdown
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/bspiritxp/jcemb/internal/domain"
@@ -11,7 +12,7 @@ import (
 func TestSplitStructuredMarkdownByHeadingHierarchy(t *testing.T) {
 	t.Parallel()
 
-	splitter := newTestSplitter(t, map[string]string{"max_chunk_chars": "200"})
+	splitter := newTestSplitter(t, map[string]string{"max_chunk_chars": "200", ShortFileMaxCharsOption: "1"})
 	document := testDocument(`# Intro
 
 Intro paragraph.
@@ -80,8 +81,9 @@ func TestSplitOversizedSectionPreservesTitlePathAndStableIDs(t *testing.T) {
 	t.Parallel()
 
 	splitter := newTestSplitter(t, map[string]string{
-		"max_chunk_chars":     "90",
-		"chunk_overlap_chars": "10",
+		"max_chunk_chars":       "90",
+		"chunk_overlap_chars":   "10",
+		ShortFileMaxCharsOption: "1",
 	})
 	longBody := "This section contains a deliberately long paragraph that should be broken into multiple deterministic chunks while keeping the same title context for every emitted chunk."
 	document := testDocument("# Guide\n\n## Deep Dive\n\n" + longBody)
@@ -107,7 +109,7 @@ func TestSplitOversizedSectionPreservesTitlePathAndStableIDs(t *testing.T) {
 func TestSplitUsesStableOrderForPreambleAndSubsections(t *testing.T) {
 	t.Parallel()
 
-	splitter := newTestSplitter(t, nil)
+	splitter := newTestSplitter(t, map[string]string{ShortFileMaxCharsOption: "1"})
 	document := testDocument("Preamble text.\n\n# First\n\nAlpha\n\n## Second\n\nBeta")
 
 	chunks, err := splitter.Split(context.Background(), document)
@@ -118,6 +120,37 @@ func TestSplitUsesStableOrderForPreambleAndSubsections(t *testing.T) {
 	require.Equal(t, []string{"First"}, chunks[1].Metadata.TitlePath)
 	require.Equal(t, []string{"First", "Second"}, chunks[2].Metadata.TitlePath)
 	require.Equal(t, []int{0, 1, 2}, []int{chunks[0].Metadata.ChunkIndex, chunks[1].Metadata.ChunkIndex, chunks[2].Metadata.ChunkIndex})
+}
+
+func TestSplitShortMarkdownAsSingleChunk(t *testing.T) {
+	t.Parallel()
+
+	splitter := newTestSplitter(t, map[string]string{"max_chunk_chars": "200"})
+	document := testDocument("# Intro\n\nIntro paragraph.\n\n## Usage\n\nRun the command.")
+	document.YAML["title"] = "Guide"
+
+	chunks, err := splitter.Split(context.Background(), document)
+	require.NoError(t, err)
+	require.Len(t, chunks, 1)
+	require.Equal(t, 0, chunks[0].Metadata.ChunkIndex)
+	require.Equal(t, []string{"Guide"}, chunks[0].Metadata.TitlePath)
+	require.Equal(t, []string{"docs", "vector"}, chunks[0].Metadata.Tags)
+	require.Contains(t, chunks[0].Content, "Guide")
+	require.Contains(t, chunks[0].Content, "# Intro")
+	require.Contains(t, chunks[0].Content, "## Usage")
+}
+
+func TestSplitLongMarkdownUsesSectionChunking(t *testing.T) {
+	t.Parallel()
+
+	splitter := newTestSplitter(t, map[string]string{"max_chunk_chars": "200"})
+	longBody := strings.Repeat("long text ", 460)
+	document := testDocument("# First\n\nAlpha\n\n## Second\n\n" + longBody)
+
+	chunks, err := splitter.Split(context.Background(), document)
+	require.NoError(t, err)
+	require.Greater(t, len(chunks), 1)
+	require.Equal(t, []string{"First"}, chunks[0].Metadata.TitlePath)
 }
 
 func newTestSplitter(t *testing.T, options map[string]string) *Splitter {

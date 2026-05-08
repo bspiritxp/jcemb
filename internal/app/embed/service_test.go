@@ -388,6 +388,27 @@ func TestServiceRunSkipsTouchedFileWhenStoredHashIsUnchangedWithoutCompatibility
 	require.Equal(t, firstSnapshot.Files[0].ModTime, secondSnapshot.Files[0].ModTime)
 }
 
+func TestFilterExtensionMapNormalizesAndValidatesRequestedExtensions(t *testing.T) {
+	t.Parallel()
+
+	registered := map[string]string{
+		".jpg": "image",
+		".md":  "markdown",
+		".png": "image",
+	}
+
+	filtered, err := filterExtensionMap(registered, []string{"md,.PNG", ".jpg", "md"})
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{
+		".jpg": "image",
+		".md":  "markdown",
+		".png": "image",
+	}, filtered)
+
+	_, err = filterExtensionMap(registered, []string{".txt"})
+	require.ErrorContains(t, err, `unsupported extension ".txt"`)
+}
+
 func newTestService(t *testing.T, provider *fakeProvider) *Service {
 	t.Helper()
 	dataRoot := t.TempDir()

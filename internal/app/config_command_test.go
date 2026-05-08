@@ -33,6 +33,28 @@ func defaultImageSettings() config.ImageConfig {
 	}
 }
 
+func defaultConfigSettings(t *testing.T) config.Settings {
+	t.Helper()
+	return config.Settings{
+		DataDir:   t.TempDir(),
+		Provider:  config.DefaultProviderName,
+		Model:     config.DefaultModelName,
+		VectorDim: config.DefaultVectorDim,
+		Ollama: config.OllamaConfig{
+			URL:       "http://localhost:11434",
+			BatchSize: 8,
+			Timeout:   30 * time.Second,
+		},
+		OpenAI: config.OpenAIConfig{
+			BaseURL:    "https://api.openai.com/v1",
+			BatchSize:  128,
+			Timeout:    60 * time.Second,
+			Dimensions: config.OpenAIDefaultDim,
+		},
+		Image: defaultImageSettings(),
+	}
+}
+
 func TestRunConfigCommandPersistsInteractiveSelections(t *testing.T) {
 	input := bytes.NewBufferString("~/custom-store\n2048\n512\nllava\n")
 	output := &bytes.Buffer{}
@@ -67,7 +89,7 @@ func TestRunConfigCommandPersistsInteractiveSelections(t *testing.T) {
 			switch selectCalls {
 			case 1:
 				require.Equal(t, "Provider", request.Label)
-				require.Equal(t, []string{config.DefaultProviderName}, request.Options)
+				require.Equal(t, []string{config.DefaultProviderName, config.OpenAIProviderName}, request.Options)
 				return config.DefaultProviderName, nil
 			case 2:
 				require.Equal(t, "Model", request.Label)
@@ -104,6 +126,136 @@ func TestRunConfigCommandPersistsInteractiveSelections(t *testing.T) {
 	require.Contains(t, output.String(), "Data directory")
 	require.Contains(t, output.String(), "Config saved.")
 	require.Contains(t, output.String(), "Image scan provider:")
+}
+
+func TestRunConfigCommandSupportsOpenAIProvider(t *testing.T) {
+	// Inputs in order: data dir, vector dim, openai base URL, openai api key,
+	// openai dimensions, image dim, image vision model.
+	input := bytes.NewBufferString("\n1536\nhttps://api.openai.com/v1\nsk-test-key\n1536\n512\nllava\n")
+	output := &bytes.Buffer{}
+
+	var saved config.PersistedConfig
+	var prompts []ConfigSelectRequest
+	_, err := RunConfigCommand(ConfigCommandRequest{
+		In:         input,
+		Out:        output,
+		ConfigPath: filepath.Join(t.TempDir(), "jcemb.json"),
+		Settings: config.Settings{
+			DataDir:   filepath.Join(t.TempDir(), ".local", "share", "jcemb"),
+			Provider:  config.DefaultProviderName,
+			Model:     config.DefaultModelName,
+			VectorDim: config.DefaultVectorDim,
+			Ollama: config.OllamaConfig{
+				URL:       "http://localhost:11434",
+				BatchSize: 8,
+				Timeout:   30 * time.Second,
+			},
+			OpenAI: config.OpenAIConfig{
+				BaseURL:    "https://api.openai.com/v1",
+				BatchSize:  128,
+				Timeout:    60 * time.Second,
+				Dimensions: 1536,
+			},
+			Image: defaultImageSettings(),
+		},
+		Save: func(cfg config.PersistedConfig) error {
+			saved = cfg
+			return nil
+		},
+		IsTerminal: func(reader io.Reader) bool {
+			return true
+		},
+		Select: func(request ConfigSelectRequest) (string, error) {
+			prompts = append(prompts, request)
+			switch request.Label {
+			case "Provider":
+				return config.OpenAIProviderName, nil
+			case "Model":
+				return config.OpenAIDefaultModel, nil
+			default:
+				return request.DefaultValue, nil
+			}
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, config.OpenAIProviderName, saved.Provider)
+	require.Equal(t, config.OpenAIDefaultModel, saved.Model)
+	require.Equal(t, 1536, saved.VectorDim)
+	require.Equal(t, "https://api.openai.com/v1", saved.OpenAI.BaseURL)
+	require.Equal(t, "sk-test-key", saved.OpenAI.APIKey)
+	require.Equal(t, 1536, saved.OpenAI.Dimensions)
+
+	var modelPrompt ConfigSelectRequest
+	for _, p := range prompts {
+		if p.Label == "Model" {
+			modelPrompt = p
+		}
+	}
+	require.Equal(t, []string{config.OpenAIDefaultModel, CustomModelOptionLabel}, modelPrompt.Options)
+
+	require.Contains(t, output.String(), "OpenAI provider settings:")
+	require.Contains(t, output.String(), "OpenAI base URL")
+	require.Contains(t, output.String(), "OpenAI API key")
+}
+
+func TestRunConfigCommandShowsJSONWithoutTTY(t *testing.T) {
+	output := &bytes.Buffer{}
+
+	_, err := RunConfigCommand(ConfigCommandRequest{
+		In:         bytes.NewBufferString(""),
+		Out:        output,
+		ConfigPath: filepath.Join(t.TempDir(), "jcemb.json"),
+		Settings:   defaultConfigSettings(t),
+		JSON:       true,
+		IsTerminal: func(io.Reader) bool { return false },
+	})
+	require.NoError(t, err)
+	require.Contains(t, output.String(), `"config_path"`)
+	require.Contains(t, output.String(), `"provider": "ollama"`)
+}
+
+func TestRunConfigCommandAppliesNonInteractiveUpdate(t *testing.T) {
+	var saved config.PersistedConfig
+	output := &bytes.Buffer{}
+	model := "text-embedding-3-small"
+	provider := config.OpenAIProviderName
+	apiKey := "sk-test"
+	vectorDim := 1536
+
+	_, err := RunConfigCommand(ConfigCommandRequest{
+		In:         bytes.NewBufferString(""),
+		Out:        output,
+		ConfigPath: filepath.Join(t.TempDir(), "jcemb.json"),
+		Settings:   defaultConfigSettings(t),
+		Updates: ConfigUpdates{
+			Provider:     &provider,
+			Model:        &model,
+			VectorDim:    &vectorDim,
+			OpenAIAPIKey: &apiKey,
+		},
+		Save: func(cfg config.PersistedConfig) error {
+			saved = cfg
+			return nil
+		},
+		IsTerminal: func(io.Reader) bool { return false },
+	})
+	require.NoError(t, err)
+	require.Equal(t, config.OpenAIProviderName, saved.Provider)
+	require.Equal(t, config.OpenAIDefaultModel, saved.Model)
+	require.Equal(t, 1536, saved.VectorDim)
+	require.Equal(t, "sk-test", saved.OpenAI.APIKey)
+	require.Contains(t, output.String(), "provider: openai")
+}
+
+func TestRunConfigCommandRejectsShowWithUpdates(t *testing.T) {
+	provider := config.DefaultProviderName
+	_, err := RunConfigCommand(ConfigCommandRequest{
+		Out:      io.Discard,
+		Settings: defaultConfigSettings(t),
+		Show:     true,
+		Updates:  ConfigUpdates{Provider: &provider},
+	})
+	require.ErrorContains(t, err, "--show cannot be combined")
 }
 
 func TestRunConfigCommandRePromptsUntilVectorDimensionIsValid(t *testing.T) {
@@ -177,7 +329,7 @@ func TestRunConfigCommandUsesSelectorDefaultsForProviderAndModel(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, prompts, 4)
 	require.Equal(t, "Provider", prompts[0].Label)
-	require.Equal(t, []string{config.DefaultProviderName}, prompts[0].Options)
+	require.Equal(t, []string{config.DefaultProviderName, config.OpenAIProviderName}, prompts[0].Options)
 	require.Equal(t, config.DefaultProviderName, prompts[0].DefaultValue)
 	require.Equal(t, "Model", prompts[1].Label)
 	require.Equal(t, defaultOllamaModelOptions, prompts[1].Options)

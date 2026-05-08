@@ -3,10 +3,12 @@ package markdown
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/bspiritxp/jcemb/internal/domain"
 	internalfs "github.com/bspiritxp/jcemb/internal/fs"
 	"github.com/bspiritxp/jcemb/internal/metadata"
+	splitmarkdown "github.com/bspiritxp/jcemb/internal/splitter/markdown"
 )
 
 const (
@@ -45,6 +47,9 @@ func (Provider) Recipe(config domain.ScanProviderConfig) domain.EmbedRecipe {
 		Splitter: domain.SplitterSpec{
 			Name:    Name,
 			Version: Version,
+			Options: map[string]string{
+				splitmarkdown.ShortFileMaxCharsOption: strconv.Itoa(splitmarkdown.DefaultShortFileMaxChars),
+			},
 		},
 		Flags: map[string]bool{
 			"recursive": config.Recursive,
@@ -70,7 +75,7 @@ func (Provider) BuildRecords(ctx context.Context, request domain.ScanProviderReq
 	if err != nil {
 		return domain.ScanProviderResult{}, err
 	}
-	splitter, err := splitterFactory(domain.SplitterSpec{Name: Name, Version: Version})
+	splitter, err := splitterFactory(request.Recipe.Splitter)
 	if err != nil {
 		return domain.ScanProviderResult{}, err
 	}

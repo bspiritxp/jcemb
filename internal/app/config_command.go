@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -45,9 +46,35 @@ type ConfigCommandRequest struct {
 	Out        io.Writer
 	ConfigPath string
 	Settings   config.Settings
+	Show       bool
+	JSON       bool
+	Updates    ConfigUpdates
 	Save       func(config.PersistedConfig) error
 	IsTerminal func(io.Reader) bool
 	Select     func(ConfigSelectRequest) (string, error)
+}
+
+type ConfigUpdates struct {
+	Provider        *string
+	Model           *string
+	DataDir         *string
+	VectorDim       *int
+	OllamaURL       *string
+	OllamaBatchSize *int
+	OllamaTimeout   *string
+	OpenAIBaseURL   *string
+	OpenAIAPIKey    *string
+	OpenAIBatchSize *int
+	OpenAITimeout   *string
+	OpenAIDim       *int
+	OpenAIInputType *string
+	ImageProvider   *string
+	ImageModel      *string
+	ImagePretrained *string
+	ImageDim        *int
+	ImageDevice     *string
+	ImagePython     *string
+	ImageVision     *string
 }
 
 type ConfigCommandResult struct {
@@ -71,9 +98,6 @@ func RunConfigCommand(request ConfigCommandRequest) (ConfigCommandResult, error)
 	if request.Out == nil {
 		request.Out = io.Discard
 	}
-	if request.Save == nil {
-		request.Save = config.Save
-	}
 	if request.IsTerminal == nil {
 		request.IsTerminal = isTerminalReader
 	}
@@ -83,8 +107,26 @@ func RunConfigCommand(request ConfigCommandRequest) (ConfigCommandResult, error)
 	if strings.TrimSpace(request.ConfigPath) == "" {
 		request.ConfigPath = config.Defaults().ConfigFile
 	}
+	if request.Save == nil {
+		request.Save = func(cfg config.PersistedConfig) error {
+			return config.SaveToPath(request.ConfigPath, cfg)
+		}
+	}
 	if request.Settings == (config.Settings{}) {
 		request.Settings = config.DefaultSettings()
+	}
+
+	if hasConfigUpdates(request.Updates) {
+		if request.Show {
+			return ConfigCommandResult{}, fmt.Errorf("config: --show cannot be combined with --set-* options")
+		}
+		return runConfigUpdate(request)
+	}
+	if request.Show || request.JSON {
+		if err := renderConfig(request.Out, request.ConfigPath, request.Settings, request.JSON); err != nil {
+			return ConfigCommandResult{}, err
+		}
+		return ConfigCommandResult{ConfigPath: request.ConfigPath, Saved: config.PersistedFromSettings(request.Settings)}, nil
 	}
 
 	if !request.IsTerminal(request.In) {
@@ -169,6 +211,14 @@ func RunConfigCommand(request ConfigCommandRequest) (ConfigCommandResult, error)
 
 	vectorDim, _ := strconv.Atoi(strings.TrimSpace(vectorDimValue))
 
+	openAISettings := current.OpenAI
+	if provider == config.OpenAIProviderName {
+		openAISettings, err = promptOpenAISettings(reader, writer, current.OpenAI, vectorDim)
+		if err != nil {
+			return ConfigCommandResult{}, err
+		}
+	}
+
 	imageProvider, imageModel, imageDim, imageVisionModel, err := promptImageSettings(request, reader, writer, current.Image)
 	if err != nil {
 		return ConfigCommandResult{}, err
@@ -188,11 +238,12 @@ func RunConfigCommand(request ConfigCommandRequest) (ConfigCommandResult, error)
 			Timeout:   current.Ollama.Timeout.String(),
 		},
 		OpenAI: config.PersistedOpenAIConfig{
-			BaseURL:    current.OpenAI.BaseURL,
-			APIKey:     current.OpenAI.APIKey,
-			BatchSize:  current.OpenAI.BatchSize,
-			Timeout:    current.OpenAI.Timeout.String(),
-			Dimensions: current.OpenAI.Dimensions,
+			BaseURL:    openAISettings.BaseURL,
+			APIKey:     openAISettings.APIKey,
+			BatchSize:  openAISettings.BatchSize,
+			Timeout:    openAISettings.Timeout.String(),
+			Dimensions: openAISettings.Dimensions,
+			InputType:  openAISettings.InputType,
 		},
 		Image: config.PersistedImageConfig{
 			Provider:    imageProvider,
@@ -221,6 +272,193 @@ func RunConfigCommand(request ConfigCommandRequest) (ConfigCommandResult, error)
 	_, _ = fmt.Fprintf(writer, "  image.vision_model: %s\n", saved.Image.VisionModel)
 
 	return ConfigCommandResult{ConfigPath: request.ConfigPath, Saved: saved}, nil
+}
+
+func runConfigUpdate(request ConfigCommandRequest) (ConfigCommandResult, error) {
+	settings, err := applyConfigUpdates(request.Settings, request.Updates)
+	if err != nil {
+		return ConfigCommandResult{}, err
+	}
+	saved := config.PersistedFromSettings(settings)
+	if err := request.Save(saved); err != nil {
+		return ConfigCommandResult{}, err
+	}
+	if err := renderConfig(request.Out, request.ConfigPath, settings, request.JSON); err != nil {
+		return ConfigCommandResult{}, err
+	}
+	return ConfigCommandResult{ConfigPath: request.ConfigPath, Saved: saved}, nil
+}
+
+func applyConfigUpdates(current config.Settings, updates ConfigUpdates) (config.Settings, error) {
+	saved := config.PersistedFromSettings(current)
+	if updates.Provider != nil {
+		saved.Provider = strings.TrimSpace(*updates.Provider)
+	}
+	if updates.Model != nil {
+		saved.Model = strings.TrimSpace(*updates.Model)
+	}
+	if updates.DataDir != nil {
+		saved.DataDir = strings.TrimSpace(*updates.DataDir)
+	}
+	if updates.VectorDim != nil {
+		saved.VectorDim = *updates.VectorDim
+	}
+	if updates.OllamaURL != nil {
+		saved.Ollama.URL = strings.TrimRight(strings.TrimSpace(*updates.OllamaURL), "/")
+	}
+	if updates.OllamaBatchSize != nil {
+		saved.Ollama.BatchSize = *updates.OllamaBatchSize
+	}
+	if updates.OllamaTimeout != nil {
+		saved.Ollama.Timeout = strings.TrimSpace(*updates.OllamaTimeout)
+	}
+	if updates.OpenAIBaseURL != nil {
+		saved.OpenAI.BaseURL = strings.TrimRight(strings.TrimSpace(*updates.OpenAIBaseURL), "/")
+	}
+	if updates.OpenAIAPIKey != nil {
+		saved.OpenAI.APIKey = strings.TrimSpace(*updates.OpenAIAPIKey)
+	}
+	if updates.OpenAIBatchSize != nil {
+		saved.OpenAI.BatchSize = *updates.OpenAIBatchSize
+	}
+	if updates.OpenAITimeout != nil {
+		saved.OpenAI.Timeout = strings.TrimSpace(*updates.OpenAITimeout)
+	}
+	if updates.OpenAIDim != nil {
+		saved.OpenAI.Dimensions = *updates.OpenAIDim
+	}
+	if updates.OpenAIInputType != nil {
+		saved.OpenAI.InputType = strings.TrimSpace(*updates.OpenAIInputType)
+	}
+	if updates.ImageProvider != nil {
+		saved.Image.Provider = strings.TrimSpace(*updates.ImageProvider)
+	}
+	if updates.ImageModel != nil {
+		saved.Image.Model = strings.TrimSpace(*updates.ImageModel)
+	}
+	if updates.ImagePretrained != nil {
+		saved.Image.Pretrained = strings.TrimSpace(*updates.ImagePretrained)
+	}
+	if updates.ImageDim != nil {
+		saved.Image.Dimensions = *updates.ImageDim
+	}
+	if updates.ImageDevice != nil {
+		saved.Image.Device = strings.TrimSpace(*updates.ImageDevice)
+	}
+	if updates.ImagePython != nil {
+		saved.Image.Python = strings.TrimSpace(*updates.ImagePython)
+	}
+	if updates.ImageVision != nil {
+		saved.Image.VisionModel = strings.TrimSpace(*updates.ImageVision)
+	}
+	return saved.Settings()
+}
+
+func hasConfigUpdates(updates ConfigUpdates) bool {
+	return updates.Provider != nil ||
+		updates.Model != nil ||
+		updates.DataDir != nil ||
+		updates.VectorDim != nil ||
+		updates.OllamaURL != nil ||
+		updates.OllamaBatchSize != nil ||
+		updates.OllamaTimeout != nil ||
+		updates.OpenAIBaseURL != nil ||
+		updates.OpenAIAPIKey != nil ||
+		updates.OpenAIBatchSize != nil ||
+		updates.OpenAITimeout != nil ||
+		updates.OpenAIDim != nil ||
+		updates.OpenAIInputType != nil ||
+		updates.ImageProvider != nil ||
+		updates.ImageModel != nil ||
+		updates.ImagePretrained != nil ||
+		updates.ImageDim != nil ||
+		updates.ImageDevice != nil ||
+		updates.ImagePython != nil ||
+		updates.ImageVision != nil
+}
+
+func renderConfig(writer io.Writer, configPath string, settings config.Settings, asJSON bool) error {
+	payload := config.PersistedFromSettings(settings)
+	if asJSON {
+		envelope := struct {
+			ConfigPath string                 `json:"config_path"`
+			Config     config.PersistedConfig `json:"config"`
+		}{ConfigPath: configPath, Config: payload}
+		encoder := json.NewEncoder(writer)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(envelope)
+	}
+	_, err := fmt.Fprintf(writer, "Config file: %s\n  data_dir: %s\n  provider: %s\n  model: %s\n  vector_dim: %d\n  ollama.url: %s\n  openai.base_url: %s\n  openai.dimensions: %d\n  image.provider: %s\n  image.model: %s\n  image.dimensions: %d\n  image.python: %s\n  image.vision_model: %s\n",
+		configPath,
+		payload.DataDir,
+		payload.Provider,
+		payload.Model,
+		payload.VectorDim,
+		payload.Ollama.URL,
+		payload.OpenAI.BaseURL,
+		payload.OpenAI.Dimensions,
+		payload.Image.Provider,
+		payload.Image.Model,
+		payload.Image.Dimensions,
+		payload.Image.Python,
+		payload.Image.VisionModel,
+	)
+	return err
+}
+
+func promptOpenAISettings(reader *bufio.Reader, writer io.Writer, current config.OpenAIConfig, vectorDim int) (config.OpenAIConfig, error) {
+	_, _ = fmt.Fprintln(writer)
+	_, _ = fmt.Fprintln(writer, "OpenAI provider settings:")
+
+	resolved := current
+
+	baseURLDefault := strings.TrimSpace(current.BaseURL)
+	if baseURLDefault == "" {
+		baseURLDefault = "https://api.openai.com/v1"
+	}
+	baseURL, err := promptLine(reader, writer, "OpenAI base URL", baseURLDefault, func(value string) error {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("openai base URL is required")
+		}
+		return nil
+	})
+	if err != nil {
+		return config.OpenAIConfig{}, err
+	}
+	resolved.BaseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+
+	apiKey, err := promptLine(reader, writer, "OpenAI API key", strings.TrimSpace(current.APIKey), func(value string) error {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("openai api key is required (or set OPENAI_API_KEY)")
+		}
+		return nil
+	})
+	if err != nil {
+		return config.OpenAIConfig{}, err
+	}
+	resolved.APIKey = strings.TrimSpace(apiKey)
+
+	dimDefault := current.Dimensions
+	if dimDefault <= 0 {
+		dimDefault = vectorDim
+	}
+	if dimDefault <= 0 {
+		dimDefault = config.OpenAIDefaultDim
+	}
+	dimValue, err := promptLine(reader, writer, "OpenAI embedding dimensions", strconv.Itoa(dimDefault), func(value string) error {
+		parsed, parseErr := strconv.Atoi(strings.TrimSpace(value))
+		if parseErr != nil || parsed <= 0 {
+			return fmt.Errorf("openai dimensions must be a positive integer")
+		}
+		return nil
+	})
+	if err != nil {
+		return config.OpenAIConfig{}, err
+	}
+	parsedDim, _ := strconv.Atoi(strings.TrimSpace(dimValue))
+	resolved.Dimensions = parsedDim
+
+	return resolved, nil
 }
 
 func promptImageSettings(request ConfigCommandRequest, reader *bufio.Reader, writer io.Writer, current config.ImageConfig) (string, string, int, string, error) {
@@ -346,7 +584,7 @@ func promptLine(reader *bufio.Reader, writer io.Writer, label string, defaultVal
 }
 
 func supportedProviders() []string {
-	return []string{config.DefaultProviderName}
+	return []string{config.DefaultProviderName, config.OpenAIProviderName}
 }
 
 func promptSelect(request ConfigSelectRequest) (string, error) {
@@ -480,15 +718,33 @@ func buildModelOptions(provider, current string) (options []string, defaultValue
 	standard := supportedModels(provider)
 	options = append(options, standard...)
 	current = strings.TrimSpace(current)
-	if current != "" && !containsString(standard, current) {
+	if current != "" && !containsString(standard, current) && !isStandardModelForOtherProvider(provider, current) {
 		options = append(options, current)
 		defaultValue = current
 	}
 	options = append(options, CustomModelOptionLabel)
 	if defaultValue == "" {
-		defaultValue = current
+		if containsString(standard, current) {
+			defaultValue = current
+		} else if len(standard) > 0 {
+			defaultValue = standard[0]
+		} else {
+			defaultValue = current
+		}
 	}
 	return options, defaultValue
+}
+
+func isStandardModelForOtherProvider(provider, model string) bool {
+	for _, p := range supportedProviders() {
+		if p == provider {
+			continue
+		}
+		if containsString(supportedModels(p), model) {
+			return true
+		}
+	}
+	return false
 }
 
 func isStandardModel(provider, model string) bool {

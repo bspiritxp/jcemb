@@ -13,6 +13,7 @@ type QueryOptions struct {
 	Limit          int
 	Path           string
 	FileType       string
+	Format         string
 	JSON           bool
 	Unique         bool
 	Full           bool
@@ -20,6 +21,7 @@ type QueryOptions struct {
 	ThresholdDelta float64
 	MMRLambda      float64
 	SearchWindow   int
+	Rerank         string
 }
 
 func NewQueryCmd() *cobra.Command {
@@ -30,6 +32,8 @@ func newQueryCmd(bootstrap app.Bootstrap) *cobra.Command {
 	options := QueryOptions{
 		Limit:    10,
 		FileType: "markdown",
+		Format:   "text",
+		Rerank:   "off",
 	}
 
 	cmd := &cobra.Command{
@@ -58,6 +62,7 @@ func newQueryCmd(bootstrap app.Bootstrap) *cobra.Command {
 				Provider:        bootstrap.Config.Settings.Provider,
 				ProviderOptions: bootstrap.Config.Settings.ProviderOptions(bootstrap.Config.Settings.Provider),
 				FileType:        options.FileType,
+				Format:          options.Format,
 				JSON:            options.JSON,
 				Unique:          options.Unique,
 				Full:            options.Full,
@@ -65,6 +70,7 @@ func newQueryCmd(bootstrap app.Bootstrap) *cobra.Command {
 				ThresholdDelta:  options.ThresholdDelta,
 				MMRLambda:       options.MMRLambda,
 				SearchWindow:    options.SearchWindow,
+				Rerank:          options.Rerank,
 			})
 		},
 	}
@@ -73,6 +79,7 @@ func newQueryCmd(bootstrap app.Bootstrap) *cobra.Command {
 	cmd.Flags().StringVarP(&options.FileType, "file-type", "t", options.FileType, "file type to query")
 	cmd.Flags().IntVarP(&options.Limit, "limit", "l", options.Limit, "maximum number of results")
 	cmd.Flags().StringVar(&options.Path, "path", options.Path, "optional indexed file or directory path to restrict results")
+	cmd.Flags().StringVar(&options.Format, "format", options.Format, "output format: text, json, table, tsv, or tsv-z")
 	cmd.Flags().BoolVar(&options.JSON, "json", options.JSON, "output results as JSON")
 	cmd.Flags().BoolVarP(&options.Unique, "unique", "u", options.Unique, "deduplicate results by document (keep highest-scoring chunk per file)")
 	cmd.Flags().BoolVar(&options.Full, "full", options.Full, "show full chunk content instead of truncated preview")
@@ -80,6 +87,7 @@ func newQueryCmd(bootstrap app.Bootstrap) *cobra.Command {
 	cmd.Flags().Float64Var(&options.ThresholdDelta, "threshold-delta", options.ThresholdDelta, "absolute gap from top1 cutoff (0=auto default, negative=disable)")
 	cmd.Flags().Float64Var(&options.MMRLambda, "mmr-lambda", options.MMRLambda, "MMR lambda; 1.0 disables MMR (pure score order), negative also disables")
 	cmd.Flags().IntVar(&options.SearchWindow, "search-window", options.SearchWindow, "internal candidate window before threshold/dedup/MMR (0=auto)")
+	cmd.Flags().StringVar(&options.Rerank, "rerank", options.Rerank, "optional reranker: off or bm25")
 
 	return cmd
 }

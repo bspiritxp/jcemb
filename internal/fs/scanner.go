@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -69,9 +70,10 @@ func isDefaultIgnoredDirectory(name string) bool {
 }
 
 type ScanOptions struct {
-	RootPath   string
-	Recursive  bool
-	Extensions map[string]string
+	RootPath        string
+	Recursive       bool
+	Extensions      map[string]string
+	ExcludePatterns []string
 }
 
 type File struct {
@@ -108,7 +110,7 @@ func ScanFiles(options ScanOptions) ([]File, error) {
 	}
 
 	if info.IsDir() {
-		return scanDirectory(rootPath, options.Recursive, extensions)
+		return scanDirectory(rootPath, options.Recursive, extensions, options.ExcludePatterns)
 	}
 
 	file, ok, err := newFile(filepath.Dir(rootPath), rootPath, extensions)
@@ -122,10 +124,14 @@ func ScanFiles(options ScanOptions) ([]File, error) {
 	return []File{file}, nil
 }
 
-func scanDirectory(rootPath string, recursive bool, extensions map[string]string) ([]File, error) {
+func scanDirectory(rootPath string, recursive bool, extensions map[string]string, excludePatterns []string) ([]File, error) {
 	files := make([]File, 0)
 
 	matcher, err := loadGitIgnoreMatcher(rootPath)
+	if err != nil {
+		return nil, err
+	}
+	excludeMatcher, err := buildExcludeMatcher(rootPath, excludePatterns)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +146,7 @@ func scanDirectory(rootPath string, recursive bool, extensions map[string]string
 				return nil
 			}
 
-			if shouldIgnoreDirectory(rootPath, currentPath, entry.Name(), matcher) {
+			if shouldIgnoreDirectory(rootPath, currentPath, entry.Name(), matcher) || shouldIgnoreDirectory(rootPath, currentPath, entry.Name(), excludeMatcher) {
 				return filepath.SkipDir
 			}
 
@@ -151,7 +157,7 @@ func scanDirectory(rootPath string, recursive bool, extensions map[string]string
 			return nil
 		}
 
-		if shouldIgnoreFile(rootPath, currentPath, matcher) {
+		if shouldIgnoreFile(rootPath, currentPath, matcher) || shouldIgnoreFile(rootPath, currentPath, excludeMatcher) {
 			return nil
 		}
 
@@ -170,6 +176,38 @@ func scanDirectory(rootPath string, recursive bool, extensions map[string]string
 	}
 
 	return files, nil
+}
+
+func buildExcludeMatcher(rootPath string, patterns []string) (gitignore.GitIgnore, error) {
+	normalized := normalizeExcludePatterns(patterns)
+	if len(normalized) == 0 {
+		return nil, nil
+	}
+	return gitignore.New(strings.NewReader(strings.Join(normalized, "\n")), rootPath, nil), nil
+}
+
+func normalizeExcludePatterns(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, raw := range values {
+		for _, piece := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' }) {
+			token := strings.TrimSpace(piece)
+			if token == "" || slices.Contains(out, token) {
+				continue
+			}
+			if looksLikeExtensionPattern(token) {
+				token = "*" + token
+			}
+			out = append(out, token)
+		}
+	}
+	return out
+}
+
+func looksLikeExtensionPattern(value string) bool {
+	if !strings.HasPrefix(value, ".") || value == "." || value == ".." {
+		return false
+	}
+	return !strings.ContainsAny(value, `/\*?[]`)
 }
 
 func newFile(rootPath string, filePath string, extensions map[string]string) (File, bool, error) {

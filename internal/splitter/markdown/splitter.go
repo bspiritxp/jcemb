@@ -21,17 +21,20 @@ const (
 	DefaultVersion           = "v1"
 	DefaultMaxChunkChars     = 1200
 	DefaultChunkOverlapChars = 120
+	DefaultShortFileMaxChars = 4000
 
 	maxChunkCharsOption     = "max_chunk_chars"
 	chunkOverlapCharsOption = "chunk_overlap_chars"
+	ShortFileMaxCharsOption = "short_file_max_chars"
 )
 
 type Splitter struct {
-	spec             domain.SplitterSpec
-	recipeHash       string
-	maxChunkChars    int
-	overlapChars     int
-	parserExtensions parser.Extensions
+	spec              domain.SplitterSpec
+	recipeHash        string
+	maxChunkChars     int
+	overlapChars      int
+	shortFileMaxChars int
+	parserExtensions  parser.Extensions
 }
 
 type section struct {
@@ -57,13 +60,18 @@ func New(spec domain.SplitterSpec) (*Splitter, error) {
 	if overlapChars >= maxChunkChars {
 		return nil, fmt.Errorf("splitter/markdown: %s must be smaller than %s", chunkOverlapCharsOption, maxChunkCharsOption)
 	}
+	shortFileMaxChars, err := intOption(normalized.Options, ShortFileMaxCharsOption, DefaultShortFileMaxChars)
+	if err != nil {
+		return nil, err
+	}
 
 	return &Splitter{
-		spec:             normalized,
-		recipeHash:       hashSplitterSpec(normalized),
-		maxChunkChars:    maxChunkChars,
-		overlapChars:     overlapChars,
-		parserExtensions: parser.CommonExtensions | parser.AutoHeadingIDs | parser.NoEmptyLineBeforeBlock,
+		spec:              normalized,
+		recipeHash:        hashSplitterSpec(normalized),
+		maxChunkChars:     maxChunkChars,
+		overlapChars:      overlapChars,
+		shortFileMaxChars: shortFileMaxChars,
+		parserExtensions:  parser.CommonExtensions | parser.AutoHeadingIDs | parser.NoEmptyLineBeforeBlock,
 	}, nil
 }
 
@@ -73,6 +81,12 @@ func (s *Splitter) Split(ctx context.Context, document domain.Document) ([]domai
 	}
 
 	markdownBytes := []byte(gomarkdown.NormalizeNewlines([]byte(document.Content)))
+	if chunk, ok, err := s.shortFileChunk(document, string(markdownBytes)); ok || err != nil {
+		if err != nil {
+			return nil, err
+		}
+		return []domain.Chunk{chunk}, nil
+	}
 	root := gomarkdown.Parse(markdownBytes, parser.NewWithExtensions(s.parserExtensions))
 	sections, err := s.collectSections(ctx, document, root)
 	if err != nil {
@@ -109,6 +123,30 @@ func (s *Splitter) Split(ctx context.Context, document domain.Document) ([]domai
 	}
 
 	return chunks, nil
+}
+
+func (s *Splitter) shortFileChunk(document domain.Document, normalizedContent string) (domain.Chunk, bool, error) {
+	body := strings.TrimSpace(normalizedContent)
+	content := assembleChunkContent(baseTitlePath(document), body)
+	if content == "" || runeLen(content) > s.shortFileMaxChars {
+		return domain.Chunk{}, false, nil
+	}
+	titlePath := baseTitlePath(document)
+	metadata, err := newChunkMetadata(document, 0, titlePath)
+	if err != nil {
+		return domain.Chunk{}, false, err
+	}
+	chunkDocument := document
+	chunkDocument.TitlePath = append([]string(nil), titlePath...)
+	fingerprint := fingerprint(titlePath, content)
+	return domain.Chunk{
+		ID:                 stableChunkID(document.RelPath, s.recipeHash, 0, fingerprint),
+		Document:           chunkDocument,
+		Content:            content,
+		Metadata:           metadata,
+		RecipeHash:         s.recipeHash,
+		SectionFingerprint: fingerprint,
+	}, true, nil
 }
 
 func (s *Splitter) collectSections(ctx context.Context, document domain.Document, root ast.Node) ([]section, error) {

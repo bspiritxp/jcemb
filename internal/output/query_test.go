@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"regexp"
+	"strings"
 	"testing"
 
 	queryapp "github.com/bspiritxp/jcemb/internal/app/query"
@@ -57,6 +58,53 @@ func TestRenderQueryJSONUsesVersionedSchemaV1(t *testing.T) {
 	require.Equal(t, []string{"image", "search"}, payload.Results[0].Tags)
 	require.Equal(t, "chunk-1", payload.Results[0].ChunkID)
 	require.Equal(t, "Hello world with extra whitespace.", payload.Results[0].Preview)
+}
+
+func TestRenderQueryTSVUsesStableFields(t *testing.T) {
+	t.Parallel()
+
+	result := sampleQueryResult()
+	var buffer bytes.Buffer
+
+	require.NoError(t, RenderQueryTSV(&buffer, result))
+	lines := strings.Split(strings.TrimSpace(buffer.String()), "\n")
+	require.Equal(t, "rank\tscore\trel_path\ttitle_path\ttags\tchunk_id\tpreview", lines[0])
+	require.Equal(t, "1\t0.990000\tdocs/guide.md\tGuide / Intro\timage,search\tchunk-1\tHello world with extra whitespace.", lines[1])
+}
+
+func TestRenderQueryTableUsesBorderedHumanReadableRows(t *testing.T) {
+	t.Parallel()
+
+	result := sampleQueryResult()
+	result.Results[0].Chunk.ID = "1234567890abcdef"
+	result.Results[0].Chunk.Metadata.RelPath = "/very/long/path/to/docs/guide.md"
+	result.Results[0].Chunk.Content = "Hello\n\n world   with   extra whitespace and enough extra text to make the preview table cell truncate."
+	var buffer bytes.Buffer
+
+	require.NoError(t, RenderQueryTable(&buffer, result))
+	output := buffer.String()
+	require.Contains(t, output, "┌")
+	require.Contains(t, output, "├")
+	require.Contains(t, output, "└")
+	require.Contains(t, output, "│ Rank │ Score │ Path")
+	require.NotContains(t, output, "1234567890")
+	require.Contains(t, output, "Hello world with extra")
+	require.Contains(t, output, "whitespace and enough")
+	require.NotContains(t, output, "\n\n world")
+
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		require.LessOrEqual(t, visibleWidth(line), 96, line)
+	}
+}
+
+func TestRenderQueryTSVZUsesNULRecords(t *testing.T) {
+	t.Parallel()
+
+	result := sampleQueryResult()
+	var buffer bytes.Buffer
+
+	require.NoError(t, RenderQueryTSVZ(&buffer, result))
+	require.Equal(t, "1\t0.990000\tdocs/guide.md\tGuide / Intro\timage,search\tchunk-1\tHello world with extra whitespace.\x00", buffer.String())
 }
 
 func sampleQueryResult() queryapp.Result {

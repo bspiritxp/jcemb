@@ -17,6 +17,7 @@ import (
 type EmbedRequest struct {
 	Path            string
 	Type            string
+	Extensions      []string
 	Concurrency     int
 	DataDir         string
 	Provider        string
@@ -24,6 +25,7 @@ type EmbedRequest struct {
 	Model           string
 	Recursive       bool
 	Force           bool
+	ExcludePatterns []string
 	OnProgress      func(embedapp.ProgressUpdate)
 }
 
@@ -43,6 +45,8 @@ type QueryRequest struct {
 	ThresholdDelta  float64
 	MMRLambda       float64
 	SearchWindow    int
+	Format          string
+	Rerank          string
 }
 
 type EmbedResult = embedapp.Result
@@ -132,6 +136,7 @@ func RunQuery(ctx context.Context, request QueryRequest) (QueryResult, error) {
 		ThresholdDelta:  request.ThresholdDelta,
 		MMRLambda:       request.MMRLambda,
 		SearchWindow:    request.SearchWindow,
+		Rerank:          request.Rerank,
 	})
 }
 
@@ -147,12 +152,30 @@ func cloneStringMap(values map[string]string) map[string]string {
 }
 
 func Query(request QueryRequest) error {
+	format := strings.TrimSpace(strings.ToLower(request.Format))
+	switch format {
+	case "", "text", "json", "tsv", "tsv-z", "table":
+	default:
+		return fmt.Errorf("query: format must be text, json, table, tsv, or tsv-z")
+	}
 	result, err := RunQuery(context.Background(), request)
 	if err != nil {
 		return err
 	}
-	if request.JSON {
+	switch format {
+	case "", "text":
+		if request.JSON {
+			return output.RenderQueryJSON(os.Stdout, result)
+		}
+		return output.RenderQueryText(os.Stdout, result)
+	case "json":
 		return output.RenderQueryJSON(os.Stdout, result)
+	case "table":
+		return output.RenderQueryTable(os.Stdout, result)
+	case "tsv":
+		return output.RenderQueryTSV(os.Stdout, result)
+	case "tsv-z":
+		return output.RenderQueryTSVZ(os.Stdout, result)
 	}
 	return output.RenderQueryText(os.Stdout, result)
 }

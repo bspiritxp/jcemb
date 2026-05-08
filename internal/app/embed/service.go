@@ -46,6 +46,7 @@ type ProgressUpdate struct {
 type Request struct {
 	Path            string
 	Type            string
+	Extensions      []string
 	Concurrency     int
 	DataDir         string
 	Provider        string
@@ -53,6 +54,7 @@ type Request struct {
 	Model           string
 	Recursive       bool
 	Force           bool
+	ExcludePatterns []string
 	OnProgress      func(ProgressUpdate)
 }
 
@@ -70,16 +72,16 @@ type FileError struct {
 }
 
 type Result struct {
-	Summary   Summary
-	Failures  []FileError
-	RootDir   string
-	Recipe    domain.EmbedRecipe
-	Store     domain.StoreConfig
+	Summary         Summary
+	Failures        []FileError
+	RootDir         string
+	Recipe          domain.EmbedRecipe
+	Store           domain.StoreConfig
 	CollectionCount int
-	Rebuilt   bool
-	Processed []string
-	Skipped   []string
-	Deleted   []string
+	Rebuilt         bool
+	Processed       []string
+	Skipped         []string
+	Deleted         []string
 }
 
 type RunError struct {
@@ -249,8 +251,16 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 
 	result := Result{RootDir: rootDir}
 
-	extensions := s.deps.ExtensionMap()
-	files, err := s.deps.Scan(internalfs.ScanOptions{RootPath: normalized.Path, Recursive: normalized.Recursive, Extensions: extensions})
+	extensions, err := filterExtensionMap(s.deps.ExtensionMap(), normalized.Extensions)
+	if err != nil {
+		return result, err
+	}
+	files, err := s.deps.Scan(internalfs.ScanOptions{
+		RootPath:        normalized.Path,
+		Recursive:       normalized.Recursive,
+		Extensions:      extensions,
+		ExcludePatterns: append([]string(nil), normalized.ExcludePatterns...),
+	})
 	if err != nil {
 		return result, err
 	}
@@ -343,6 +353,48 @@ func (s *Service) normalizeRequest(request Request) (Request, error) {
 		normalized.Concurrency = s.deps.DefaultWorkers
 	}
 	return normalized, nil
+}
+
+func filterExtensionMap(registered map[string]string, requested []string) (map[string]string, error) {
+	if len(requested) == 0 {
+		return cloneStringMap(registered), nil
+	}
+	normalized := normalizeRequestedExtensions(requested)
+	filtered := make(map[string]string, len(normalized))
+	for _, extension := range normalized {
+		fileType, ok := registered[extension]
+		if !ok {
+			return nil, fmt.Errorf("scan: unsupported extension %q", extension)
+		}
+		filtered[extension] = fileType
+	}
+	return filtered, nil
+}
+
+func normalizeRequestedExtensions(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, raw := range values {
+		for _, piece := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' }) {
+			extension := strings.ToLower(strings.TrimSpace(piece))
+			if extension == "" {
+				continue
+			}
+			if !strings.HasPrefix(extension, ".") {
+				extension = "." + extension
+			}
+			if extension == "." {
+				continue
+			}
+			if _, ok := seen[extension]; ok {
+				continue
+			}
+			seen[extension] = struct{}{}
+			out = append(out, extension)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (s *Service) preparePipelineState(rootDir string, request Request, recipe domain.EmbedRecipe, fileType string) (*pipelineState, error) {

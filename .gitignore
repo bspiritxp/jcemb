@@ -18,3 +18,5 @@ coverage.out
 
 # Temporary files
 /tmp/
+memory/
+

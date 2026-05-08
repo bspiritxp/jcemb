@@ -278,6 +278,64 @@ func TestServiceRunSearchesAllCollectionsWhenPathOmitted(t *testing.T) {
 	}
 }
 
+func TestServiceRunAppliesBM25RerankAfterGlobalMerge(t *testing.T) {
+	t.Parallel()
+
+	dataRoot := t.TempDir()
+	workspace := t.TempDir()
+	firstRoot := filepath.Join(workspace, "first")
+	secondRoot := filepath.Join(workspace, "second")
+	require.NoError(t, os.MkdirAll(firstRoot, 0o755))
+	require.NoError(t, os.MkdirAll(secondRoot, 0o755))
+	createdAt := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	firstConfig := testStoreConfig(firstRoot, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt)
+	secondConfig := testStoreConfig(secondRoot, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt)
+	persistIndexedCollection(t, firstConfig, nil)
+	persistIndexedCollection(t, secondConfig, nil)
+	registerCollectionAt(t, dataRoot, firstRoot)
+	registerCollectionAt(t, dataRoot, secondRoot)
+
+	target := newSearchResult("target", "docs/bagua.md", 0.80)
+	target.Chunk.Content = "离卦 代表 火 的 卦象"
+	unrelated := newSearchResult("unrelated", "memory/workflow.md", 0.99)
+	unrelated.Chunk.Content = "这个 workflow 记录 是 修改 说明"
+
+	stores := map[string]*recordingVectorStore{
+		firstConfig.CollectionID:  {results: []domain.SearchResult{target}},
+		secondConfig.CollectionID: {results: []domain.SearchResult{unrelated}},
+	}
+	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
+		GetProvider: func(name string) (registry.ProviderFactory, error) {
+			require.Equal(t, ollama.Name, name)
+			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
+				return &fakeProvider{vector: []float32{1, 0, 0}}, nil
+			}, nil
+		},
+		GetVectorStore: func(name string) (registry.VectorStoreFactory, error) {
+			require.Equal(t, lancedb.Name, name)
+			return func(config domain.StoreConfig) (domain.VectorStore, error) {
+				store, ok := stores[config.CollectionID]
+				require.True(t, ok, "unexpected collection id %q", config.CollectionID)
+				return store, nil
+			}, nil
+		},
+	})
+
+	result, err := service.Run(context.Background(), Request{
+		Text:           "代表火的卦象是什么",
+		Limit:          2,
+		ThresholdAlpha: -1,
+		ThresholdDelta: -1,
+		Rerank:         "bm25",
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"target", "unrelated"}, resultIDs(result.Results))
+	require.Equal(t, []int{1, 2}, resultRanks(result.Results))
+	require.Greater(t, result.Results[0].Score, result.Results[1].Score)
+	require.Less(t, result.Results[1].Score, 1.0)
+}
+
 func TestServiceRunSkipsStaleCollectionsWhenPathOmitted(t *testing.T) {
 	t.Parallel()
 

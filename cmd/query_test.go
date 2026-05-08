@@ -18,6 +18,7 @@ func TestNewQueryCmd(t *testing.T) {
 	require.NotNil(t, flags.Lookup("file-type"))
 	require.NotNil(t, flags.Lookup("limit"))
 	require.NotNil(t, flags.Lookup("path"))
+	require.NotNil(t, flags.Lookup("format"))
 	require.NotNil(t, flags.Lookup("json"))
 	require.NotNil(t, flags.Lookup("unique"))
 	require.NotNil(t, flags.Lookup("full"))
@@ -25,6 +26,7 @@ func TestNewQueryCmd(t *testing.T) {
 	require.NotNil(t, flags.Lookup("threshold-delta"))
 	require.NotNil(t, flags.Lookup("mmr-lambda"))
 	require.NotNil(t, flags.Lookup("search-window"))
+	require.NotNil(t, flags.Lookup("rerank"))
 }
 
 func TestQueryHelpShowsFlags(t *testing.T) {
@@ -44,6 +46,8 @@ func TestQueryHelpShowsFlags(t *testing.T) {
 	require.Contains(t, output, "--path")
 	require.Contains(t, output, "optional indexed file or directory path to restrict results")
 	require.NotContains(t, output, `default "."`)
+	require.Contains(t, output, "--format")
+	require.Contains(t, output, "text, json, table, tsv, or tsv-z")
 	require.Contains(t, output, "--json")
 	require.Contains(t, output, "--unique")
 	require.Contains(t, output, "--full")
@@ -51,6 +55,7 @@ func TestQueryHelpShowsFlags(t *testing.T) {
 	require.Contains(t, output, "--threshold-delta")
 	require.Contains(t, output, "--mmr-lambda")
 	require.Contains(t, output, "--search-window")
+	require.Contains(t, output, "--rerank")
 }
 
 func TestQueryMissingTextReturnsClearError(t *testing.T) {

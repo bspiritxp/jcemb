@@ -47,6 +47,7 @@ type Request struct {
 	ThresholdDelta  float64
 	MMRLambda       float64
 	SearchWindow    int
+	Rerank          string
 }
 
 type Result struct {
@@ -144,7 +145,12 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 	if normalized.Unique {
 		sorted = dedupByRelPath(sorted)
 	}
-	sorted = selectFinalResults(queryVectors, manifests, sorted, normalized.Limit, normalized.MMRLambda)
+	if normalized.Rerank == "bm25" {
+		sorted = applyBM25Rerank(normalized.Text, sorted)
+		sorted = truncateAndRerank(sorted, normalized.Limit)
+	} else {
+		sorted = selectFinalResults(queryVectors, manifests, sorted, normalized.Limit, normalized.MMRLambda)
+	}
 
 	return Result{
 		Query:    normalized.Text,
@@ -192,6 +198,13 @@ func normalizeRequest(request Request) (Request, error) {
 	}
 	if normalized.SearchWindow < 0 {
 		normalized.SearchWindow = 0
+	}
+	normalized.Rerank = strings.TrimSpace(strings.ToLower(normalized.Rerank))
+	if normalized.Rerank == "" {
+		normalized.Rerank = "off"
+	}
+	if normalized.Rerank != "off" && normalized.Rerank != "bm25" {
+		return Request{}, fmt.Errorf("query: rerank must be off or bm25")
 	}
 	normalized.Provider = strings.TrimSpace(normalized.Provider)
 	normalized.ProviderOptions = cloneStringMap(normalized.ProviderOptions)
@@ -414,7 +427,6 @@ func (s *Service) searchScope(ctx context.Context, scope queryScope, request Req
 		}
 		return index.Snapshot{}, nil, nil, err
 	}
-
 	return snapshot, queryVector, results, nil
 }
 
