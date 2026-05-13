@@ -217,12 +217,7 @@ func (s *Service) checkCollection(ctx context.Context, dataDir string, entry ind
 }
 
 func resolveFilePath(input string) (string, error) {
-	expanded, err := jcpaths.ExpandUserHome(strings.TrimSpace(input))
-	if err != nil {
-		return "", fmt.Errorf("show: resolve file path: %w", err)
-	}
-
-	absPath, err := filepath.Abs(expanded)
+	absPath, err := jcpaths.ResolveAbsolutePath(input)
 	if err != nil {
 		return "", fmt.Errorf("show: resolve file path: %w", err)
 	}
@@ -230,8 +225,7 @@ func resolveFilePath(input string) (string, error) {
 	info, err := os.Stat(absPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// Allow non-existent files — the user may be querying a previously indexed path
-			return filepath.Clean(absPath), nil
+			return absPath, nil
 		}
 		return "", fmt.Errorf("show: stat file: %w", err)
 	}
@@ -240,7 +234,7 @@ func resolveFilePath(input string) (string, error) {
 		return "", fmt.Errorf("show: %s is a directory, expected a file", absPath)
 	}
 
-	return filepath.Clean(absPath), nil
+	return absPath, nil
 }
 
 func normalizeFileType(fileType string) string {

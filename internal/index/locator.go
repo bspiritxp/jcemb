@@ -276,6 +276,48 @@ func (r CollectionRegistry) validate() error {
 	return nil
 }
 
+func ResolveDescendantCollections(dataRoot string, inputPath string, fileType string) ([]CollectionMatch, error) {
+	resolved, err := jcpaths.ResolveCollectionRoot(inputPath)
+	if err != nil {
+		return nil, err
+	}
+	if !resolved.IsDir {
+		return nil, nil
+	}
+
+	registry, err := LoadCollectionRegistry(dataRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	normalizedFileType := normalizeFileType(fileType)
+	matches := make([]CollectionMatch, 0)
+	for index := range registry.Collections {
+		candidate := &registry.Collections[index]
+		if normalizedFileType != "" && normalizeFileType(candidate.FileType) != normalizedFileType {
+			continue
+		}
+		if !hasRootPrefix(candidate.RootIdentity, resolved.Identity) {
+			continue
+		}
+		if jcpaths.NormalizeStoredPath(candidate.RootIdentity) == resolved.Identity {
+			continue
+		}
+		matches = append(matches, CollectionMatch{
+			CollectionEntry: *candidate,
+			InputPath:       resolved.InputPath,
+			PathPrefix:      "",
+			PathIsDir:       resolved.IsDir,
+			InputRoot:       resolved.RootDir,
+			InputTarget:     resolved.Identity,
+		})
+	}
+	return matches, nil
+}
+
 func normalizeFileType(fileType string) string {
 	trimmed := strings.TrimSpace(fileType)
 	if trimmed == "" {

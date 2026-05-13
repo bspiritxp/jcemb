@@ -92,6 +92,89 @@ func TestResolveCollectionReturnsNotFoundForUnindexedPath(t *testing.T) {
 	require.ErrorIs(t, err, ErrCollectionNotFound)
 }
 
+func TestResolveDescendantCollectionsReturnsAllChildrenUnderAncestor(t *testing.T) {
+	t.Parallel()
+
+	dataRoot := t.TempDir()
+	workspace, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	parent := filepath.Join(workspace, "project")
+	memoryRoot := filepath.Join(parent, "memory")
+	notesRoot := filepath.Join(parent, "notes")
+	siblingRoot := filepath.Join(workspace, "other")
+	require.NoError(t, os.MkdirAll(memoryRoot, 0o755))
+	require.NoError(t, os.MkdirAll(notesRoot, 0o755))
+	require.NoError(t, os.MkdirAll(siblingRoot, 0o755))
+
+	require.NoError(t, SaveCollection(dataRoot, CollectionEntry{RootDir: memoryRoot}))
+	require.NoError(t, SaveCollection(dataRoot, CollectionEntry{RootDir: notesRoot}))
+	require.NoError(t, SaveCollection(dataRoot, CollectionEntry{RootDir: siblingRoot}))
+
+	matches, err := ResolveDescendantCollections(dataRoot, parent, "")
+	require.NoError(t, err)
+	require.Len(t, matches, 2)
+
+	roots := []string{matches[0].RootDir, matches[1].RootDir}
+	require.ElementsMatch(t, []string{filepath.Clean(memoryRoot), filepath.Clean(notesRoot)}, roots)
+	for _, m := range matches {
+		require.Empty(t, m.PathPrefix)
+		require.True(t, m.PathIsDir)
+	}
+}
+
+func TestResolveDescendantCollectionsExcludesExactRoot(t *testing.T) {
+	t.Parallel()
+
+	dataRoot := t.TempDir()
+	rootDir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, SaveCollection(dataRoot, CollectionEntry{RootDir: rootDir}))
+
+	matches, err := ResolveDescendantCollections(dataRoot, rootDir, "")
+	require.NoError(t, err)
+	require.Empty(t, matches)
+}
+
+func TestResolveDescendantCollectionsFiltersByFileType(t *testing.T) {
+	t.Parallel()
+
+	dataRoot := t.TempDir()
+	workspace, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	parent := filepath.Join(workspace, "project")
+	mdRoot := filepath.Join(parent, "docs")
+	imgRoot := filepath.Join(parent, "images")
+	require.NoError(t, os.MkdirAll(mdRoot, 0o755))
+	require.NoError(t, os.MkdirAll(imgRoot, 0o755))
+
+	require.NoError(t, SaveCollection(dataRoot, CollectionEntry{RootDir: mdRoot, FileType: "markdown"}))
+	require.NoError(t, SaveCollection(dataRoot, CollectionEntry{RootDir: imgRoot, FileType: "image"}))
+
+	mdMatches, err := ResolveDescendantCollections(dataRoot, parent, "markdown")
+	require.NoError(t, err)
+	require.Len(t, mdMatches, 1)
+	require.Equal(t, filepath.Clean(mdRoot), mdMatches[0].RootDir)
+
+	imgMatches, err := ResolveDescendantCollections(dataRoot, parent, "image")
+	require.NoError(t, err)
+	require.Len(t, imgMatches, 1)
+	require.Equal(t, filepath.Clean(imgRoot), imgMatches[0].RootDir)
+}
+
+func TestResolveDescendantCollectionsRejectsFileInput(t *testing.T) {
+	t.Parallel()
+
+	dataRoot := t.TempDir()
+	rootDir := t.TempDir()
+	filePath := filepath.Join(rootDir, "guide.md")
+	require.NoError(t, os.WriteFile(filePath, []byte("x"), 0o644))
+	require.NoError(t, SaveCollection(dataRoot, CollectionEntry{RootDir: rootDir}))
+
+	matches, err := ResolveDescendantCollections(dataRoot, filePath, "")
+	require.NoError(t, err)
+	require.Nil(t, matches)
+}
+
 func TestSaveCollectionPersistsRegistryUnderFixedDataRoot(t *testing.T) {
 	t.Parallel()
 

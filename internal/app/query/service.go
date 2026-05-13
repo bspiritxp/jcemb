@@ -71,14 +71,15 @@ type queryScope struct {
 }
 
 type Dependencies struct {
-	LoadIndex         func(rootDir string) (index.Snapshot, error)
-	LoadCollections   func(dataRoot string) (index.CollectionRegistry, error)
-	ResolveAppPaths   func() (jcpaths.AppPaths, error)
-	ResolveCollection func(dataRoot string, inputPath string, fileType string) (index.CollectionMatch, error)
-	GetProvider       func(name string) (registry.ProviderFactory, error)
-	GetVectorStore    func(name string) (registry.VectorStoreFactory, error)
-	Stat              func(name string) (os.FileInfo, error)
-	VectorStore       string
+	LoadIndex                    func(rootDir string) (index.Snapshot, error)
+	LoadCollections              func(dataRoot string) (index.CollectionRegistry, error)
+	ResolveAppPaths              func() (jcpaths.AppPaths, error)
+	ResolveCollection            func(dataRoot string, inputPath string, fileType string) (index.CollectionMatch, error)
+	ResolveDescendantCollections func(dataRoot string, inputPath string, fileType string) ([]index.CollectionMatch, error)
+	GetProvider                  func(name string) (registry.ProviderFactory, error)
+	GetVectorStore               func(name string) (registry.VectorStoreFactory, error)
+	Stat                         func(name string) (os.FileInfo, error)
+	VectorStore                  string
 }
 
 type Service struct {
@@ -97,6 +98,9 @@ func NewService(deps Dependencies) *Service {
 	}
 	if deps.ResolveCollection == nil {
 		deps.ResolveCollection = index.ResolveCollectionForFileType
+	}
+	if deps.ResolveDescendantCollections == nil {
+		deps.ResolveDescendantCollections = index.ResolveDescendantCollections
 	}
 	if deps.GetProvider == nil {
 		deps.GetProvider = registry.GetProvider
@@ -171,6 +175,13 @@ func normalizeRequest(request Request) (Request, error) {
 		return Request{}, fmt.Errorf("query: text is required")
 	}
 	normalized.Path = strings.TrimSpace(normalized.Path)
+	if normalized.Path != "" {
+		resolvedPath, err := jcpaths.ResolveAbsolutePath(normalized.Path)
+		if err != nil {
+			return Request{}, fmt.Errorf("query: resolve path: %w", err)
+		}
+		normalized.Path = resolvedPath
+	}
 	normalized.Tags = domain.NormalizeTags(normalized.Tags)
 	if normalized.Limit <= 0 {
 		normalized.Limit = defaultLimit
@@ -453,6 +464,14 @@ func (s *Service) resolvePathQueryScopes(inputPath string, dataDir string, fileT
 	match, err := s.deps.ResolveCollection(dataDir, inputPath, fileType)
 	if err != nil {
 		if errors.Is(err, index.ErrCollectionNotFound) {
+			descendants, descErr := s.deps.ResolveDescendantCollections(dataDir, inputPath, fileType)
+			if descErr != nil {
+				return nil, fmt.Errorf("query: resolve descendant collections: %w", descErr)
+			}
+			if len(descendants) > 0 {
+				return descendantScopes(descendants, dataDir), nil
+			}
+
 			legacyDBPath, legacyFound, legacyErr := s.findLegacyLocalIndex(inputPath)
 			if legacyErr != nil {
 				return nil, fmt.Errorf("query: inspect legacy local index: %w", legacyErr)
@@ -473,6 +492,21 @@ func (s *Service) resolvePathQueryScopes(inputPath string, dataDir string, fileT
 		StorageRoot:  jcpaths.CollectionStorageDir(dataDir, match.CollectionID),
 		PathPrefix:   match.PathPrefix,
 	}}, nil
+}
+
+func descendantScopes(matches []index.CollectionMatch, dataDir string) []queryScope {
+	scopes := make([]queryScope, 0, len(matches))
+	for _, m := range matches {
+		scopes = append(scopes, queryScope{
+			RootDir:      m.RootDir,
+			RootIdentity: m.RootIdentity,
+			CollectionID: m.CollectionID,
+			DataDir:      dataDir,
+			StorageRoot:  jcpaths.CollectionStorageDir(dataDir, m.CollectionID),
+			PathPrefix:   m.PathPrefix,
+		})
+	}
+	return scopes
 }
 
 func (s *Service) resolveGlobalQueryScopes(dataDir string, fileType string) ([]queryScope, error) {

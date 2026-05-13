@@ -35,17 +35,23 @@ func ResolveAppPaths() (AppPaths, error) {
 	}, nil
 }
 
-func ResolveCollectionRoot(inputPath string) (CollectionRoot, error) {
-	expanded, err := ExpandUserHome(strings.TrimSpace(inputPath))
+func ResolveAbsolutePath(input string) (string, error) {
+	expanded, err := ExpandUserHome(strings.TrimSpace(input))
 	if err != nil {
-		return CollectionRoot{}, err
+		return "", err
 	}
-
 	absPath, err := filepath.Abs(expanded)
 	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(absPath), nil
+}
+
+func ResolveCollectionRoot(inputPath string) (CollectionRoot, error) {
+	absPath, err := ResolveAbsolutePath(inputPath)
+	if err != nil {
 		return CollectionRoot{}, err
 	}
-	absPath = filepath.Clean(absPath)
 
 	info, err := os.Stat(absPath)
 	if err != nil {

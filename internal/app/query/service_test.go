@@ -215,6 +215,83 @@ func TestServiceRunUsesLongestIndexedRootAndPreservesRelativePathPrefix(t *testi
 	require.Equal(t, guidePath, fileResult.Results[0].Chunk.Metadata.RelPath)
 }
 
+func TestNormalizeRequestResolvesRelativePath(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	originalWD, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(workspace))
+	t.Cleanup(func() { require.NoError(t, os.Chdir(originalWD)) })
+
+	for _, tc := range []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{name: "current dir dot slash", input: "./", expected: workspace},
+		{name: "current dir dot", input: ".", expected: workspace},
+		{name: "trailing slash trimmed", input: "./   ", expected: workspace},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			normalized, err := normalizeRequest(Request{Text: "hello", Path: tc.input})
+			require.NoError(t, err)
+			expected, err := filepath.EvalSymlinks(tc.expected)
+			require.NoError(t, err)
+			actual, err := filepath.EvalSymlinks(normalized.Path)
+			require.NoError(t, err)
+			require.Equal(t, expected, actual)
+		})
+	}
+
+	normalized, err := normalizeRequest(Request{Text: "hello", Path: ""})
+	require.NoError(t, err)
+	require.Empty(t, normalized.Path)
+}
+
+func TestServiceRunResolvesRelativePathFlag(t *testing.T) {
+	dataRoot := t.TempDir()
+	rootDir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	createdAt := time.Date(2026, 5, 13, 10, 0, 0, 0, time.UTC)
+	config := testStoreConfig(rootDir, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt)
+	relPath := "docs/guide.md"
+	persistIndexedCollection(t, config, []domain.FileState{{
+		RelPath: relPath, FileHash: "hash", RecipeHash: "recipe",
+		ChunkIDs: []string{"chunk-guide"}, ChunkCount: 1, LastIndexedAt: createdAt,
+	}})
+	registerCollectionAt(t, dataRoot, rootDir)
+
+	store, err := lancedb.New(config)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	require.NoError(t, store.Upsert(context.Background(), []domain.VectorRecord{
+		newVectorRecord("chunk-guide", relPath, []string{"go"}, []float32{1, 0, 0}, 0),
+	}))
+
+	originalWD, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(rootDir))
+	t.Cleanup(func() { require.NoError(t, os.Chdir(originalWD)) })
+
+	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
+		GetProvider: func(name string) (registry.ProviderFactory, error) {
+			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
+				return &fakeProvider{vector: []float32{1, 0, 0}}, nil
+			}, nil
+		},
+		GetVectorStore: func(name string) (registry.VectorStoreFactory, error) {
+			return lancedb.New, nil
+		},
+	})
+
+	result, err := service.Run(context.Background(), Request{Text: "guide", Path: "./", MMRLambda: 1.0})
+	require.NoError(t, err)
+	require.Len(t, result.Results, 1)
+	require.Equal(t, relPath, result.Results[0].Chunk.Metadata.RelPath)
+}
+
 func TestServiceRunSearchesAllCollectionsWhenPathOmitted(t *testing.T) {
 	t.Parallel()
 
@@ -276,6 +353,73 @@ func TestServiceRunSearchesAllCollectionsWhenPathOmitted(t *testing.T) {
 		require.Len(t, store.searchQueries, 1)
 		require.Empty(t, store.searchQueries[0].PathPrefix)
 	}
+}
+
+func TestServiceRunMatchesDescendantCollectionsWhenPathIsAncestor(t *testing.T) {
+	t.Parallel()
+
+	dataRoot := t.TempDir()
+	workspace, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	parent := filepath.Join(workspace, "project")
+	memoryRoot := filepath.Join(parent, "memory")
+	notesRoot := filepath.Join(parent, "notes")
+	siblingRoot := filepath.Join(workspace, "other")
+	require.NoError(t, os.MkdirAll(memoryRoot, 0o755))
+	require.NoError(t, os.MkdirAll(notesRoot, 0o755))
+	require.NoError(t, os.MkdirAll(siblingRoot, 0o755))
+
+	createdAt := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	memoryConfig := testStoreConfig(memoryRoot, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt)
+	notesConfig := testStoreConfig(notesRoot, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt)
+	siblingConfig := testStoreConfig(siblingRoot, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt)
+	persistIndexedCollection(t, memoryConfig, nil)
+	persistIndexedCollection(t, notesConfig, nil)
+	persistIndexedCollection(t, siblingConfig, nil)
+	registerCollectionAt(t, dataRoot, memoryRoot)
+	registerCollectionAt(t, dataRoot, notesRoot)
+	registerCollectionAt(t, dataRoot, siblingRoot)
+
+	stores := map[string]*recordingVectorStore{
+		memoryConfig.CollectionID:  {results: []domain.SearchResult{newSearchResult("memory-doc", "memory/a.md", 0.9)}},
+		notesConfig.CollectionID:   {results: []domain.SearchResult{newSearchResult("notes-doc", "notes/b.md", 0.95)}},
+		siblingConfig.CollectionID: {results: []domain.SearchResult{newSearchResult("sibling-doc", "other/c.md", 0.99)}},
+	}
+	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
+		GetProvider: func(name string) (registry.ProviderFactory, error) {
+			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
+				return &fakeProvider{vector: []float32{1, 0, 0}}, nil
+			}, nil
+		},
+		GetVectorStore: func(name string) (registry.VectorStoreFactory, error) {
+			return func(config domain.StoreConfig) (domain.VectorStore, error) {
+				store, ok := stores[config.CollectionID]
+				require.True(t, ok, "unexpected collection id %q", config.CollectionID)
+				return store, nil
+			}, nil
+		},
+	})
+
+	result, err := service.Run(context.Background(), Request{
+		Text:           "vendor",
+		Path:           parent,
+		Limit:          10,
+		ThresholdAlpha: -1,
+		ThresholdDelta: -1,
+		MMRLambda:      1.0,
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Results, 2)
+	relPaths := []string{result.Results[0].Chunk.Metadata.RelPath, result.Results[1].Chunk.Metadata.RelPath}
+	require.ElementsMatch(t, []string{"memory/a.md", "notes/b.md"}, relPaths)
+	require.NotContains(t, relPaths, "other/c.md")
+
+	require.Len(t, stores[memoryConfig.CollectionID].searchQueries, 1)
+	require.Empty(t, stores[memoryConfig.CollectionID].searchQueries[0].PathPrefix)
+	require.Len(t, stores[notesConfig.CollectionID].searchQueries, 1)
+	require.Empty(t, stores[notesConfig.CollectionID].searchQueries[0].PathPrefix)
+	require.Empty(t, stores[siblingConfig.CollectionID].searchQueries)
 }
 
 func TestServiceRunAppliesBM25RerankAfterGlobalMerge(t *testing.T) {
