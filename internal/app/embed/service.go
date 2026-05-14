@@ -24,6 +24,8 @@ import (
 	_ "github.com/bspiritxp/jcemb/internal/scanprovider/markdown"
 	_ "github.com/bspiritxp/jcemb/internal/splitter/markdown"
 	"github.com/bspiritxp/jcemb/internal/storage/lancedb"
+	_ "github.com/bspiritxp/jcemb/internal/tagextractor/ollama"
+	_ "github.com/bspiritxp/jcemb/internal/tagextractor/openai"
 )
 
 const (
@@ -52,6 +54,7 @@ type Request struct {
 	Provider        string
 	ProviderOptions map[string]string
 	Model           string
+	TagExtractor    domain.TagExtractorConfig
 	Recursive       bool
 	Force           bool
 	ExcludePatterns []string
@@ -98,6 +101,7 @@ type Dependencies struct {
 	Now             func() time.Time
 	GetProvider     func(name string) (registry.ProviderFactory, error)
 	GetSplitter     func(name string) (registry.SplitterFactory, error)
+	GetTagExtractor func(name string) (domain.TagExtractorFactory, error)
 	GetVectorStore  func(name string) (registry.VectorStoreFactory, error)
 	GetScanProvider func(fileType string) (domain.ScanProvider, error)
 	ExtensionMap    func() map[string]string
@@ -176,6 +180,9 @@ func NewService(deps Dependencies) *Service {
 	}
 	if deps.GetSplitter == nil {
 		deps.GetSplitter = registry.GetSplitter
+	}
+	if deps.GetTagExtractor == nil {
+		deps.GetTagExtractor = registry.GetTagExtractor
 	}
 	if deps.GetVectorStore == nil {
 		deps.GetVectorStore = registry.GetVectorStore
@@ -285,6 +292,7 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 			Provider:        normalized.Provider,
 			ProviderOptions: cloneStringMap(normalized.ProviderOptions),
 			Model:           normalized.Model,
+			TagExtractor:    cloneTagExtractorConfig(normalized.TagExtractor),
 			Recursive:       normalized.Recursive,
 			Force:           normalized.Force,
 		}
@@ -349,6 +357,7 @@ func (s *Service) normalizeRequest(request Request) (Request, error) {
 		return Request{}, fmt.Errorf("scan: model is required")
 	}
 	normalized.ProviderOptions = cloneStringMap(normalized.ProviderOptions)
+	normalized.TagExtractor = cloneTagExtractorConfig(normalized.TagExtractor)
 	if normalized.Concurrency < minimumWorkerConcurrency {
 		normalized.Concurrency = s.deps.DefaultWorkers
 	}
@@ -583,11 +592,12 @@ func (s *Service) executeJob(ctx context.Context, job fileJob, recipe domain.Emb
 			DocType:  job.file.DocType,
 			ModTime:  job.file.ModTime,
 		},
-		Config:      providerConfig,
-		Recipe:      recipe,
-		Now:         s.deps.Now,
-		GetProvider: providerFactoryAdapter(s.deps.GetProvider),
-		GetSplitter: splitterFactoryAdapter(s.deps.GetSplitter),
+		Config:          providerConfig,
+		Recipe:          recipe,
+		Now:             s.deps.Now,
+		GetProvider:     providerFactoryAdapter(s.deps.GetProvider),
+		GetSplitter:     splitterFactoryAdapter(s.deps.GetSplitter),
+		GetTagExtractor: tagExtractorAdapter(s.deps.GetTagExtractor),
 	})
 	if err != nil {
 		result.err = err
@@ -736,6 +746,13 @@ func cloneStringMap(values map[string]string) map[string]string {
 	return cloned
 }
 
+func cloneTagExtractorConfig(config domain.TagExtractorConfig) domain.TagExtractorConfig {
+	config.Provider = strings.TrimSpace(config.Provider)
+	config.Model = strings.TrimSpace(config.Model)
+	config.Options = cloneStringMap(config.Options)
+	return config
+}
+
 func (s *Service) registerCollection(state *pipelineState) error {
 	return s.deps.SaveCollection(state.request.DataDir, index.CollectionEntry{
 		CollectionID: state.storeConfig.CollectionID,
@@ -823,5 +840,15 @@ func splitterFactoryAdapter(getSplitter func(name string) (registry.SplitterFact
 		return func(spec domain.SplitterSpec) (domain.Splitter, error) {
 			return factory(spec)
 		}, nil
+	}
+}
+
+func tagExtractorAdapter(getTagExtractor func(name string) (domain.TagExtractorFactory, error)) func(domain.TagExtractorConfig) (domain.TagExtractor, error) {
+	return func(config domain.TagExtractorConfig) (domain.TagExtractor, error) {
+		factory, err := getTagExtractor(config.Provider)
+		if err != nil {
+			return nil, err
+		}
+		return factory(config)
 	}
 }

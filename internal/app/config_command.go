@@ -55,26 +55,31 @@ type ConfigCommandRequest struct {
 }
 
 type ConfigUpdates struct {
-	Provider        *string
-	Model           *string
-	DataDir         *string
-	VectorDim       *int
-	OllamaURL       *string
-	OllamaBatchSize *int
-	OllamaTimeout   *string
-	OpenAIBaseURL   *string
-	OpenAIAPIKey    *string
-	OpenAIBatchSize *int
-	OpenAITimeout   *string
-	OpenAIDim       *int
-	OpenAIInputType *string
-	ImageProvider   *string
-	ImageModel      *string
-	ImagePretrained *string
-	ImageDim        *int
-	ImageDevice     *string
-	ImagePython     *string
-	ImageVision     *string
+	Provider                  *string
+	Model                     *string
+	DataDir                   *string
+	VectorDim                 *int
+	OllamaURL                 *string
+	OllamaBatchSize           *int
+	OllamaTimeout             *string
+	OpenAIBaseURL             *string
+	OpenAIAPIKey              *string
+	OpenAIBatchSize           *int
+	OpenAITimeout             *string
+	OpenAIDim                 *int
+	OpenAIInputType           *string
+	ImageProvider             *string
+	ImageModel                *string
+	ImagePretrained           *string
+	ImageDim                  *int
+	ImageDevice               *string
+	ImagePython               *string
+	ImageVision               *string
+	TagExtractorEnabled       *bool
+	TagExtractorProvider      *string
+	TagExtractorModel         *string
+	TagExtractorMaxTags       *int
+	TagExtractorSkipIfHasYAML *bool
 }
 
 type ConfigCommandResult struct {
@@ -112,7 +117,7 @@ func RunConfigCommand(request ConfigCommandRequest) (ConfigCommandResult, error)
 			return config.SaveToPath(request.ConfigPath, cfg)
 		}
 	}
-	if request.Settings == (config.Settings{}) {
+	if isZeroSettings(request.Settings) {
 		request.Settings = config.DefaultSettings()
 	}
 
@@ -254,6 +259,17 @@ func RunConfigCommand(request ConfigCommandRequest) (ConfigCommandResult, error)
 			Python:      current.Image.Python,
 			VisionModel: imageVisionModel,
 		},
+		TagExtractor: config.PersistedTagExtractorConfig{
+			Enabled:       current.TagExtractor.Enabled,
+			Provider:      current.TagExtractor.Provider,
+			Model:         current.TagExtractor.Model,
+			MaxTags:       current.TagExtractor.MaxTags,
+			MinTagLen:     current.TagExtractor.MinTagLen,
+			MaxTagLen:     current.TagExtractor.MaxTagLen,
+			SkipIfHasYAML: current.TagExtractor.SkipIfHasYAML,
+			Timeout:       current.TagExtractor.Timeout.String(),
+			Options:       cloneOptions(current.TagExtractor.Options),
+		},
 	}
 
 	if err := request.Save(saved); err != nil {
@@ -270,6 +286,10 @@ func RunConfigCommand(request ConfigCommandRequest) (ConfigCommandResult, error)
 	_, _ = fmt.Fprintf(writer, "  image.model: %s\n", saved.Image.Model)
 	_, _ = fmt.Fprintf(writer, "  image.dimensions: %d\n", saved.Image.Dimensions)
 	_, _ = fmt.Fprintf(writer, "  image.vision_model: %s\n", saved.Image.VisionModel)
+	_, _ = fmt.Fprintf(writer, "  tag_extractor.enabled: %t\n", saved.TagExtractor.Enabled)
+	_, _ = fmt.Fprintf(writer, "  tag_extractor.provider: %s\n", saved.TagExtractor.Provider)
+	_, _ = fmt.Fprintf(writer, "  tag_extractor.model: %s\n", saved.TagExtractor.Model)
+	_, _ = fmt.Fprintf(writer, "  tag_extractor.max_tags: %d\n", saved.TagExtractor.MaxTags)
 
 	return ConfigCommandResult{ConfigPath: request.ConfigPath, Saved: saved}, nil
 }
@@ -351,6 +371,21 @@ func applyConfigUpdates(current config.Settings, updates ConfigUpdates) (config.
 	if updates.ImageVision != nil {
 		saved.Image.VisionModel = strings.TrimSpace(*updates.ImageVision)
 	}
+	if updates.TagExtractorEnabled != nil {
+		saved.TagExtractor.Enabled = *updates.TagExtractorEnabled
+	}
+	if updates.TagExtractorProvider != nil {
+		saved.TagExtractor.Provider = strings.TrimSpace(*updates.TagExtractorProvider)
+	}
+	if updates.TagExtractorModel != nil {
+		saved.TagExtractor.Model = strings.TrimSpace(*updates.TagExtractorModel)
+	}
+	if updates.TagExtractorMaxTags != nil {
+		saved.TagExtractor.MaxTags = *updates.TagExtractorMaxTags
+	}
+	if updates.TagExtractorSkipIfHasYAML != nil {
+		saved.TagExtractor.SkipIfHasYAML = *updates.TagExtractorSkipIfHasYAML
+	}
 	return saved.Settings()
 }
 
@@ -374,7 +409,12 @@ func hasConfigUpdates(updates ConfigUpdates) bool {
 		updates.ImageDim != nil ||
 		updates.ImageDevice != nil ||
 		updates.ImagePython != nil ||
-		updates.ImageVision != nil
+		updates.ImageVision != nil ||
+		updates.TagExtractorEnabled != nil ||
+		updates.TagExtractorProvider != nil ||
+		updates.TagExtractorModel != nil ||
+		updates.TagExtractorMaxTags != nil ||
+		updates.TagExtractorSkipIfHasYAML != nil
 }
 
 func renderConfig(writer io.Writer, configPath string, settings config.Settings, asJSON bool) error {
@@ -388,7 +428,7 @@ func renderConfig(writer io.Writer, configPath string, settings config.Settings,
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(envelope)
 	}
-	_, err := fmt.Fprintf(writer, "Config file: %s\n  data_dir: %s\n  provider: %s\n  model: %s\n  vector_dim: %d\n  ollama.url: %s\n  openai.base_url: %s\n  openai.dimensions: %d\n  image.provider: %s\n  image.model: %s\n  image.dimensions: %d\n  image.python: %s\n  image.vision_model: %s\n",
+	_, err := fmt.Fprintf(writer, "Config file: %s\n  data_dir: %s\n  provider: %s\n  model: %s\n  vector_dim: %d\n  ollama.url: %s\n  openai.base_url: %s\n  openai.dimensions: %d\n  image.provider: %s\n  image.model: %s\n  image.dimensions: %d\n  image.python: %s\n  image.vision_model: %s\n  tag_extractor.enabled: %t\n  tag_extractor.provider: %s\n  tag_extractor.model: %s\n  tag_extractor.max_tags: %d\n  tag_extractor.min_tag_len: %d\n  tag_extractor.max_tag_len: %d\n  tag_extractor.skip_if_has_yaml: %t\n  tag_extractor.timeout: %s\n",
 		configPath,
 		payload.DataDir,
 		payload.Provider,
@@ -402,8 +442,46 @@ func renderConfig(writer io.Writer, configPath string, settings config.Settings,
 		payload.Image.Dimensions,
 		payload.Image.Python,
 		payload.Image.VisionModel,
+		payload.TagExtractor.Enabled,
+		payload.TagExtractor.Provider,
+		payload.TagExtractor.Model,
+		payload.TagExtractor.MaxTags,
+		payload.TagExtractor.MinTagLen,
+		payload.TagExtractor.MaxTagLen,
+		payload.TagExtractor.SkipIfHasYAML,
+		payload.TagExtractor.Timeout,
 	)
 	return err
+}
+
+func cloneOptions(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func isZeroSettings(settings config.Settings) bool {
+	return strings.TrimSpace(settings.DataDir) == "" &&
+		strings.TrimSpace(settings.Provider) == "" &&
+		strings.TrimSpace(settings.Model) == "" &&
+		settings.VectorDim == 0 &&
+		settings.Ollama == (config.OllamaConfig{}) &&
+		settings.OpenAI == (config.OpenAIConfig{}) &&
+		settings.Image == (config.ImageConfig{}) &&
+		settings.TagExtractor.Enabled == false &&
+		strings.TrimSpace(settings.TagExtractor.Provider) == "" &&
+		strings.TrimSpace(settings.TagExtractor.Model) == "" &&
+		settings.TagExtractor.MaxTags == 0 &&
+		settings.TagExtractor.MinTagLen == 0 &&
+		settings.TagExtractor.MaxTagLen == 0 &&
+		settings.TagExtractor.SkipIfHasYAML == false &&
+		settings.TagExtractor.Timeout == 0 &&
+		len(settings.TagExtractor.Options) == 0
 }
 
 func promptOpenAISettings(reader *bufio.Reader, writer io.Writer, current config.OpenAIConfig, vectorDim int) (config.OpenAIConfig, error) {

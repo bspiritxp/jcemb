@@ -388,6 +388,68 @@ func TestServiceRunSkipsTouchedFileWhenStoredHashIsUnchangedWithoutCompatibility
 	require.Equal(t, firstSnapshot.Files[0].ModTime, secondSnapshot.Files[0].ModTime)
 }
 
+func TestServiceRunWiresTagExtractorIntoMarkdownRuntimePath(t *testing.T) {
+	t.Parallel()
+
+	rootDir := writeDocs(t, map[string]string{
+		"guide.md": "# Guide\n\nSemantic topic document.",
+	})
+	provider := newFakeProvider(nil)
+	extractor := &capturingTagExtractor{tags: []string{"topic-a", "topic-b"}}
+	service := newTestServiceWithTagExtractor(t, provider, extractor)
+
+	result, err := service.Run(context.Background(), Request{
+		Path:        rootDir,
+		Type:        "md",
+		Concurrency: 1,
+		Provider:    ollama.Name,
+		Model:       ollama.DefaultModel,
+		TagExtractor: domain.TagExtractorConfig{
+			Provider:      "openai",
+			Model:         "gpt-4.1-mini",
+			Options:       map[string]string{"openai_api_key": "sk-test", "openai_base_url": "https://example.test/v1"},
+			Timeout:       45 * time.Second,
+			MaxTags:       6,
+			MinTagLen:     2,
+			MaxTagLen:     32,
+			SkipIfHasYAML: true,
+		},
+		Recursive: true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result.Recipe.TagExtractor)
+	require.Equal(t, "openai", result.Recipe.TagExtractor.Provider)
+	require.Equal(t, "gpt-4.1-mini", result.Recipe.TagExtractor.Model)
+	require.Equal(t, 6, result.Recipe.TagExtractor.MaxTags)
+	require.Equal(t, 45*time.Second, extractor.config.Timeout)
+	require.Equal(t, "sk-test", extractor.config.Options["openai_api_key"])
+	require.Equal(t, "https://example.test/v1", extractor.config.Options["openai_base_url"])
+
+	snapshot, loadErr := loadSnapshotForTest(rootDir, service.deps.ResolveAppPaths)
+	require.NoError(t, loadErr)
+	store, openErr := lancedb.New(domain.StoreConfig{
+		RootDir:         rootDir,
+		DataDir:         snapshot.Config.DataDir,
+		CollectionID:    snapshot.Config.CollectionID,
+		RootIdentity:    snapshot.Config.RootIdentity,
+		Namespace:       lancedb.Name,
+		Provider:        snapshot.Config.Provider,
+		ProviderOptions: snapshot.Config.ProviderOptions,
+		Model:           snapshot.Config.Model,
+		Splitter:        snapshot.Config.Splitter,
+		VectorDim:       snapshot.Config.VectorDim,
+		DBVersion:       lancedb.DBVersion,
+		CreatedAt:       snapshot.Config.CreatedAt,
+	})
+	require.NoError(t, openErr)
+	defer func() { _ = store.Close() }()
+	records, findErr := store.FindBySource(context.Background(), filepath.ToSlash(filepath.Join(rootDir, "guide.md")))
+	require.NoError(t, findErr)
+	require.NotEmpty(t, records)
+	require.Equal(t, []string{"topic-a", "topic-b"}, records[0].SemanticTags)
+	require.NotNil(t, records[0].TagVector)
+}
+
 func TestFilterExtensionMapNormalizesAndValidatesRequestedExtensions(t *testing.T) {
 	t.Parallel()
 
@@ -441,6 +503,44 @@ func newTestService(t *testing.T, provider *fakeProvider) *Service {
 	})
 }
 
+func newTestServiceWithTagExtractor(t *testing.T, provider *fakeProvider, extractor *capturingTagExtractor) *Service {
+	t.Helper()
+	dataRoot := t.TempDir()
+	return NewService(Dependencies{
+		ResolveAppPaths: func() (jcpaths.AppPaths, error) {
+			return jcpaths.AppPaths{DataRoot: dataRoot, ConfigFile: filepath.Join(dataRoot, "jcemb.json")}, nil
+		},
+		LoadIndex: func(rootDir string) (index.Snapshot, error) {
+			return loadSnapshotFromDataRoot(rootDir, dataRoot)
+		},
+		GetProvider: func(name string) (registry.ProviderFactory, error) {
+			if name != ollama.Name {
+				return nil, errors.New("unknown provider")
+			}
+			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
+				provider.name = config.Name
+				return provider, nil
+			}, nil
+		},
+		GetSplitter: func(name string) (registry.SplitterFactory, error) {
+			return func(spec domain.SplitterSpec) (domain.Splitter, error) {
+				return markdown.New(spec)
+			}, nil
+		},
+		GetTagExtractor: func(name string) (domain.TagExtractorFactory, error) {
+			return func(config domain.TagExtractorConfig) (domain.TagExtractor, error) {
+				extractor.config = config
+				return extractor, nil
+			}, nil
+		},
+		GetVectorStore: func(name string) (registry.VectorStoreFactory, error) {
+			return func(config domain.StoreConfig) (domain.VectorStore, error) {
+				return lancedb.New(config)
+			}, nil
+		},
+	})
+}
+
 type fakeProvider struct {
 	name     string
 	failures map[string]error
@@ -451,6 +551,11 @@ type fakeProvider struct {
 type fakeEmbedder struct {
 	provider *fakeProvider
 	model    domain.ModelSpec
+}
+
+type capturingTagExtractor struct {
+	config domain.TagExtractorConfig
+	tags   []string
 }
 
 func newFakeProvider(failures map[string]error) *fakeProvider {
@@ -500,6 +605,10 @@ func (e *fakeEmbedder) Embed(_ context.Context, request domain.EmbedRequest) ([]
 		result = append(result, domain.Embedding{ChunkID: input.ChunkID, Vector: []float32{1, float32(input.Metadata.ChunkIndex), length}})
 	}
 	return result, nil
+}
+
+func (e *capturingTagExtractor) Extract(_ context.Context, _ domain.TagExtractRequest) (domain.TagExtractResult, error) {
+	return domain.TagExtractResult{Tags: append([]string(nil), e.tags...)}, nil
 }
 
 func writeDocs(t *testing.T, files map[string]string) string {

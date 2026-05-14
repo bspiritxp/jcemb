@@ -11,7 +11,19 @@ import (
 	queryapp "github.com/bspiritxp/jcemb/internal/app/query"
 	showapp "github.com/bspiritxp/jcemb/internal/app/show"
 	"github.com/bspiritxp/jcemb/internal/config"
+	"github.com/bspiritxp/jcemb/internal/domain"
 	"github.com/bspiritxp/jcemb/internal/output"
+)
+
+var (
+	runEmbedService = func(ctx context.Context, request embedapp.Request) (EmbedResult, error) {
+		service := embedapp.NewService(embedapp.Dependencies{})
+		return service.Run(ctx, request)
+	}
+	runQueryService = func(ctx context.Context, request queryapp.Request) (QueryResult, error) {
+		service := queryapp.NewService(queryapp.Dependencies{})
+		return service.Run(ctx, request)
+	}
 )
 
 type EmbedRequest struct {
@@ -23,6 +35,7 @@ type EmbedRequest struct {
 	Provider        string
 	ProviderOptions map[string]string
 	Model           string
+	TagExtractor    domain.TagExtractorConfig
 	Recursive       bool
 	Force           bool
 	ExcludePatterns []string
@@ -37,7 +50,10 @@ type QueryRequest struct {
 	DataDir         string
 	Provider        string
 	ProviderOptions map[string]string
+	TagExtractor    domain.TagExtractorConfig
 	FileType        string
+	NoTag           bool
+	TagWeight       float64
 	JSON            bool
 	Unique          bool
 	Full            bool
@@ -80,8 +96,10 @@ func RunEmbed(ctx context.Context, request EmbedRequest) (EmbedResult, error) {
 	if len(request.ProviderOptions) == 0 {
 		request.ProviderOptions = loaded.Settings.ProviderOptions(request.Provider)
 	}
-	service := embedapp.NewService(embedapp.Dependencies{})
-	return service.Run(ctx, embedapp.Request(request))
+	if isZeroTagExtractorConfig(request.TagExtractor) {
+		request.TagExtractor = runtimeTagExtractorConfig(loaded.Settings)
+	}
+	return runEmbedService(ctx, embedapp.Request(request))
 }
 
 func Embed(request EmbedRequest) error {
@@ -120,8 +138,10 @@ func RunQuery(ctx context.Context, request QueryRequest) (QueryResult, error) {
 	if len(request.ProviderOptions) == 0 {
 		request.ProviderOptions = loaded.Settings.ProviderOptions(request.Provider)
 	}
-	service := queryapp.NewService(queryapp.Dependencies{})
-	return service.Run(ctx, queryapp.Request{
+	if isZeroTagExtractorConfig(request.TagExtractor) {
+		request.TagExtractor = runtimeTagExtractorConfig(loaded.Settings)
+	}
+	return runQueryService(ctx, queryapp.Request{
 		Text:            request.Text,
 		Tags:            append([]string(nil), request.Tags...),
 		Limit:           request.Limit,
@@ -129,7 +149,10 @@ func RunQuery(ctx context.Context, request QueryRequest) (QueryResult, error) {
 		DataDir:         request.DataDir,
 		Provider:        request.Provider,
 		ProviderOptions: cloneStringMap(request.ProviderOptions),
+		TagExtractor:    cloneTagExtractorConfig(request.TagExtractor),
 		FileType:        request.FileType,
+		NoTag:           request.NoTag,
+		TagWeight:       request.TagWeight,
 		Unique:          request.Unique,
 		Full:            request.Full,
 		ThresholdAlpha:  request.ThresholdAlpha,
@@ -138,6 +161,44 @@ func RunQuery(ctx context.Context, request QueryRequest) (QueryResult, error) {
 		SearchWindow:    request.SearchWindow,
 		Rerank:          request.Rerank,
 	})
+}
+
+func runtimeTagExtractorConfig(settings config.Settings) domain.TagExtractorConfig {
+	if !settings.TagExtractor.Enabled {
+		return domain.TagExtractorConfig{}
+	}
+	options := settings.ProviderOptions(settings.TagExtractor.Provider)
+	for key, value := range settings.TagExtractor.Options {
+		options[key] = value
+	}
+	return domain.TagExtractorConfig{
+		Provider:      strings.TrimSpace(settings.TagExtractor.Provider),
+		Model:         strings.TrimSpace(settings.TagExtractor.Model),
+		Options:       options,
+		Timeout:       settings.TagExtractor.Timeout,
+		MaxTags:       settings.TagExtractor.MaxTags,
+		MinTagLen:     settings.TagExtractor.MinTagLen,
+		MaxTagLen:     settings.TagExtractor.MaxTagLen,
+		SkipIfHasYAML: settings.TagExtractor.SkipIfHasYAML,
+	}
+}
+
+func cloneTagExtractorConfig(config domain.TagExtractorConfig) domain.TagExtractorConfig {
+	config.Provider = strings.TrimSpace(config.Provider)
+	config.Model = strings.TrimSpace(config.Model)
+	config.Options = cloneStringMap(config.Options)
+	return config
+}
+
+func isZeroTagExtractorConfig(config domain.TagExtractorConfig) bool {
+	return strings.TrimSpace(config.Provider) == "" &&
+		strings.TrimSpace(config.Model) == "" &&
+		len(config.Options) == 0 &&
+		config.Timeout == 0 &&
+		config.MaxTags == 0 &&
+		config.MinTagLen == 0 &&
+		config.MaxTagLen == 0 &&
+		!config.SkipIfHasYAML
 }
 
 func cloneStringMap(values map[string]string) map[string]string {

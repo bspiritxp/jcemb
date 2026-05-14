@@ -40,7 +40,10 @@ type Request struct {
 	DataDir         string
 	Provider        string
 	ProviderOptions map[string]string
+	TagExtractor    domain.TagExtractorConfig
 	FileType        string
+	NoTag           bool
+	TagWeight       float64
 	Unique          bool
 	Full            bool
 	ThresholdAlpha  float64
@@ -77,6 +80,7 @@ type Dependencies struct {
 	ResolveCollection            func(dataRoot string, inputPath string, fileType string) (index.CollectionMatch, error)
 	ResolveDescendantCollections func(dataRoot string, inputPath string, fileType string) ([]index.CollectionMatch, error)
 	GetProvider                  func(name string) (registry.ProviderFactory, error)
+	GetTagExtractor              func(name string) (domain.TagExtractorFactory, error)
 	GetVectorStore               func(name string) (registry.VectorStoreFactory, error)
 	Stat                         func(name string) (os.FileInfo, error)
 	VectorStore                  string
@@ -105,6 +109,9 @@ func NewService(deps Dependencies) *Service {
 	if deps.GetProvider == nil {
 		deps.GetProvider = registry.GetProvider
 	}
+	if deps.GetTagExtractor == nil {
+		deps.GetTagExtractor = registry.GetTagExtractor
+	}
 	if deps.GetVectorStore == nil {
 		deps.GetVectorStore = registry.GetVectorStore
 	}
@@ -131,11 +138,16 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	queryTags, useTagFusion, err := s.prepareQueryTags(ctx, normalized)
+	if err != nil {
+		return Result{}, err
+	}
+	queryTagState := queryTagState{tags: queryTags, useTagFusion: useTagFusion}
 	results := make([]domain.SearchResult, 0)
 	manifests := make([]domain.StoreConfig, 0, len(scopes))
 	queryVectors := make([][]float32, 0, len(scopes))
 	for _, scope := range scopes {
-		snapshot, queryVector, collectionResults, err := s.searchScope(ctx, scope, normalized)
+		snapshot, queryVector, collectionResults, err := s.searchScope(ctx, scope, normalized, &queryTagState)
 		if err != nil {
 			return Result{}, err
 		}
@@ -219,6 +231,7 @@ func normalizeRequest(request Request) (Request, error) {
 	}
 	normalized.Provider = strings.TrimSpace(normalized.Provider)
 	normalized.ProviderOptions = cloneStringMap(normalized.ProviderOptions)
+	normalized.TagExtractor = cloneTagExtractorConfig(normalized.TagExtractor)
 	normalized.FileType = normalizeFileType(normalized.FileType)
 	if normalized.FileType == "" {
 		normalized.FileType = defaultFileType
@@ -368,6 +381,13 @@ func cloneStringMap(values map[string]string) map[string]string {
 	return cloned
 }
 
+func cloneTagExtractorConfig(config domain.TagExtractorConfig) domain.TagExtractorConfig {
+	config.Provider = strings.TrimSpace(config.Provider)
+	config.Model = strings.TrimSpace(config.Model)
+	config.Options = cloneStringMap(config.Options)
+	return config
+}
+
 func normalizeFileType(fileType string) string {
 	trimmed := strings.TrimSpace(fileType)
 	if trimmed == "" {
@@ -379,7 +399,7 @@ func normalizeFileType(fileType string) string {
 	return trimmed
 }
 
-func (s *Service) searchScope(ctx context.Context, scope queryScope, request Request) (index.Snapshot, []float32, []domain.SearchResult, error) {
+func (s *Service) searchScope(ctx context.Context, scope queryScope, request Request, tagState *queryTagState) (index.Snapshot, []float32, []domain.SearchResult, error) {
 	snapshot, err := s.deps.LoadIndex(scope.StorageRoot)
 	if err != nil {
 		switch {
@@ -408,6 +428,11 @@ func (s *Service) searchScope(ctx context.Context, scope queryScope, request Req
 		return index.Snapshot{}, nil, nil, err
 	}
 
+	queryTagVector, useTagFusion, err := s.resolveScopeQueryTagVector(ctx, snapshot.Config, request, tagState)
+	if err != nil {
+		return index.Snapshot{}, nil, nil, err
+	}
+
 	factory, err := s.deps.GetVectorStore(s.deps.VectorStore)
 	if err != nil {
 		return index.Snapshot{}, nil, nil, err
@@ -427,10 +452,13 @@ func (s *Service) searchScope(ctx context.Context, scope queryScope, request Req
 	}
 
 	results, err := store.Search(ctx, domain.SearchQuery{
-		Vector:     queryVector,
-		Limit:      effectiveSearchWindow(request.Limit, request.SearchWindow),
-		Tags:       request.Tags,
-		PathPrefix: pathPrefix,
+		Vector:       queryVector,
+		TagVector:    queryTagVector,
+		Limit:        effectiveSearchWindow(request.Limit, request.SearchWindow),
+		Tags:         request.Tags,
+		PathPrefix:   pathPrefix,
+		TagWeight:    request.TagWeight,
+		UseTagFusion: useTagFusion,
 	})
 	if err != nil {
 		if errors.Is(err, lancedb.ErrVectorDBNotFound) {

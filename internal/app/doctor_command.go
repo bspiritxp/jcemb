@@ -44,7 +44,7 @@ func RunDoctorCommand(request DoctorCommandRequest) (DoctorCommandResult, error)
 	if strings.TrimSpace(request.ConfigPath) == "" {
 		request.ConfigPath = config.Defaults().ConfigFile
 	}
-	if request.Settings == (config.Settings{}) {
+	if isZeroSettings(request.Settings) {
 		request.Settings = config.DefaultSettings()
 	}
 	if request.CheckHTTP == nil {

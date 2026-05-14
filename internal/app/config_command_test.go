@@ -52,6 +52,16 @@ func defaultConfigSettings(t *testing.T) config.Settings {
 			Dimensions: config.OpenAIDefaultDim,
 		},
 		Image: defaultImageSettings(),
+		TagExtractor: config.TagExtractorConfig{
+			Enabled:       true,
+			Provider:      config.DefaultProviderName,
+			Model:         "qwen2.5:7b",
+			MaxTags:       8,
+			MinTagLen:     2,
+			MaxTagLen:     32,
+			SkipIfHasYAML: true,
+			Timeout:       30 * time.Second,
+		},
 	}
 }
 
@@ -212,6 +222,7 @@ func TestRunConfigCommandShowsJSONWithoutTTY(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, output.String(), `"config_path"`)
 	require.Contains(t, output.String(), `"provider": "ollama"`)
+	require.Contains(t, output.String(), `"tag_extractor"`)
 }
 
 func TestRunConfigCommandAppliesNonInteractiveUpdate(t *testing.T) {
@@ -221,6 +232,9 @@ func TestRunConfigCommandAppliesNonInteractiveUpdate(t *testing.T) {
 	provider := config.OpenAIProviderName
 	apiKey := "sk-test"
 	vectorDim := 1536
+	tagExtractorEnabled := false
+	tagExtractorModel := "gpt-4.1-mini"
+	tagExtractorMaxTags := 5
 
 	_, err := RunConfigCommand(ConfigCommandRequest{
 		In:         bytes.NewBufferString(""),
@@ -228,10 +242,13 @@ func TestRunConfigCommandAppliesNonInteractiveUpdate(t *testing.T) {
 		ConfigPath: filepath.Join(t.TempDir(), "jcemb.json"),
 		Settings:   defaultConfigSettings(t),
 		Updates: ConfigUpdates{
-			Provider:     &provider,
-			Model:        &model,
-			VectorDim:    &vectorDim,
-			OpenAIAPIKey: &apiKey,
+			Provider:            &provider,
+			Model:               &model,
+			VectorDim:           &vectorDim,
+			OpenAIAPIKey:        &apiKey,
+			TagExtractorEnabled: &tagExtractorEnabled,
+			TagExtractorModel:   &tagExtractorModel,
+			TagExtractorMaxTags: &tagExtractorMaxTags,
 		},
 		Save: func(cfg config.PersistedConfig) error {
 			saved = cfg
@@ -244,7 +261,32 @@ func TestRunConfigCommandAppliesNonInteractiveUpdate(t *testing.T) {
 	require.Equal(t, config.OpenAIDefaultModel, saved.Model)
 	require.Equal(t, 1536, saved.VectorDim)
 	require.Equal(t, "sk-test", saved.OpenAI.APIKey)
+	require.False(t, saved.TagExtractor.Enabled)
+	require.Equal(t, "gpt-4.1-mini", saved.TagExtractor.Model)
+	require.Equal(t, 5, saved.TagExtractor.MaxTags)
 	require.Contains(t, output.String(), "provider: openai")
+	require.Contains(t, output.String(), "tag_extractor.enabled: false")
+}
+
+func TestRunConfigCommandShowIncludesTagExtractorBlock(t *testing.T) {
+	output := &bytes.Buffer{}
+	settings := defaultConfigSettings(t)
+	settings.TagExtractor.Model = "qwen2.5:14b"
+	settings.TagExtractor.MaxTags = 6
+
+	_, err := RunConfigCommand(ConfigCommandRequest{
+		In:         bytes.NewBufferString(""),
+		Out:        output,
+		ConfigPath: filepath.Join(t.TempDir(), "jcemb.json"),
+		Settings:   settings,
+		Show:       true,
+		IsTerminal: func(io.Reader) bool { return false },
+	})
+	require.NoError(t, err)
+	require.Contains(t, output.String(), "tag_extractor.enabled: true")
+	require.Contains(t, output.String(), "tag_extractor.provider: ollama")
+	require.Contains(t, output.String(), "tag_extractor.model: qwen2.5:14b")
+	require.Contains(t, output.String(), "tag_extractor.max_tags: 6")
 }
 
 func TestRunConfigCommandRejectsShowWithUpdates(t *testing.T) {

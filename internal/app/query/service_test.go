@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/bspiritxp/jcemb/internal/index"
 	jcpaths "github.com/bspiritxp/jcemb/internal/paths"
 	"github.com/bspiritxp/jcemb/internal/provider/ollama"
+	"github.com/bspiritxp/jcemb/internal/provider/openai"
 	"github.com/bspiritxp/jcemb/internal/registry"
 	"github.com/bspiritxp/jcemb/internal/storage/lancedb"
 	"github.com/stretchr/testify/require"
@@ -420,6 +422,361 @@ func TestServiceRunMatchesDescendantCollectionsWhenPathIsAncestor(t *testing.T) 
 	require.Len(t, stores[notesConfig.CollectionID].searchQueries, 1)
 	require.Empty(t, stores[notesConfig.CollectionID].searchQueries[0].PathPrefix)
 	require.Empty(t, stores[siblingConfig.CollectionID].searchQueries)
+}
+
+func TestServiceRunFallsBackToContentOnlyForShortQuery(t *testing.T) {
+	t.Parallel()
+
+	dataRoot := t.TempDir()
+	rootDir := t.TempDir()
+	createdAt := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	persistIndexedCollection(t, testStoreConfig(rootDir, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt), nil)
+	registerCollectionAt(t, dataRoot, rootDir)
+
+	extractor := &fakeTagExtractor{tags: []string{"topic"}}
+	store := &recordingVectorStore{}
+	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
+		GetProvider: func(name string) (registry.ProviderFactory, error) {
+			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
+				return &fakeProvider{vector: []float32{1, 0, 0}}, nil
+			}, nil
+		},
+		GetTagExtractor: func(name string) (domain.TagExtractorFactory, error) {
+			return func(config domain.TagExtractorConfig) (domain.TagExtractor, error) {
+				return extractor, nil
+			}, nil
+		},
+		GetVectorStore: func(name string) (registry.VectorStoreFactory, error) {
+			return func(config domain.StoreConfig) (domain.VectorStore, error) {
+				return store, nil
+			}, nil
+		},
+	})
+
+	_, err := service.Run(context.Background(), Request{
+		Text:         "short",
+		Path:         rootDir,
+		TagWeight:    0.3,
+		MMRLambda:    1.0,
+		TagExtractor: domain.TagExtractorConfig{Provider: "ollama", Model: "qwen2.5:7b"},
+	})
+	require.NoError(t, err)
+	require.Zero(t, extractor.calls)
+	require.Len(t, store.searchQueries, 1)
+	require.False(t, store.searchQueries[0].UseTagFusion)
+	require.Nil(t, store.searchQueries[0].TagVector)
+}
+
+func TestServiceRunFallsBackToContentOnlyForImagePathQuery(t *testing.T) {
+	t.Parallel()
+
+	dataRoot := t.TempDir()
+	rootDir := t.TempDir()
+	createdAt := time.Date(2026, 5, 14, 12, 30, 0, 0, time.UTC)
+	persistIndexedCollection(t, testStoreConfig(rootDir, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt), nil)
+	registerCollectionAt(t, dataRoot, rootDir)
+
+	imagePath := filepath.Join(t.TempDir(), "query.png")
+	require.NoError(t, os.WriteFile(imagePath, []byte("png"), 0o644))
+
+	extractor := &fakeTagExtractor{tags: []string{"topic"}}
+	store := &recordingVectorStore{}
+	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
+		GetProvider: func(name string) (registry.ProviderFactory, error) {
+			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
+				return &fakeProvider{vector: []float32{1, 0, 0}}, nil
+			}, nil
+		},
+		GetTagExtractor: func(name string) (domain.TagExtractorFactory, error) {
+			return func(config domain.TagExtractorConfig) (domain.TagExtractor, error) {
+				return extractor, nil
+			}, nil
+		},
+		GetVectorStore: func(name string) (registry.VectorStoreFactory, error) {
+			return func(config domain.StoreConfig) (domain.VectorStore, error) {
+				return store, nil
+			}, nil
+		},
+	})
+
+	_, err := service.Run(context.Background(), Request{
+		Text:         imagePath,
+		Path:         rootDir,
+		TagWeight:    0.3,
+		MMRLambda:    1.0,
+		TagExtractor: domain.TagExtractorConfig{Provider: "ollama", Model: "qwen2.5:7b"},
+	})
+	require.NoError(t, err)
+	require.Zero(t, extractor.calls)
+	require.Len(t, store.searchQueries, 1)
+	require.False(t, store.searchQueries[0].UseTagFusion)
+	require.Nil(t, store.searchQueries[0].TagVector)
+}
+
+func TestServiceRunFallsBackToContentOnlyWhenNoTagEnabled(t *testing.T) {
+	t.Parallel()
+
+	dataRoot := t.TempDir()
+	rootDir := t.TempDir()
+	createdAt := time.Date(2026, 5, 14, 13, 0, 0, 0, time.UTC)
+	persistIndexedCollection(t, testStoreConfig(rootDir, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt), nil)
+	registerCollectionAt(t, dataRoot, rootDir)
+
+	extractor := &fakeTagExtractor{tags: []string{"topic"}}
+	store := &recordingVectorStore{}
+	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
+		GetProvider: func(name string) (registry.ProviderFactory, error) {
+			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
+				return &fakeProvider{vector: []float32{1, 0, 0}}, nil
+			}, nil
+		},
+		GetTagExtractor: func(name string) (domain.TagExtractorFactory, error) {
+			return func(config domain.TagExtractorConfig) (domain.TagExtractor, error) {
+				return extractor, nil
+			}, nil
+		},
+		GetVectorStore: func(name string) (registry.VectorStoreFactory, error) {
+			return func(config domain.StoreConfig) (domain.VectorStore, error) {
+				return store, nil
+			}, nil
+		},
+	})
+
+	_, err := service.Run(context.Background(), Request{
+		Text:         "this is a long query about something",
+		Path:         rootDir,
+		NoTag:        true,
+		TagWeight:    0.3,
+		MMRLambda:    1.0,
+		TagExtractor: domain.TagExtractorConfig{Provider: "ollama", Model: "qwen2.5:7b"},
+	})
+	require.NoError(t, err)
+	require.Zero(t, extractor.calls)
+	require.Len(t, store.searchQueries, 1)
+	require.False(t, store.searchQueries[0].UseTagFusion)
+	require.Nil(t, store.searchQueries[0].TagVector)
+}
+
+func TestServiceRunFallsBackToContentOnlyWhenTagExtractionFails(t *testing.T) {
+	t.Parallel()
+
+	dataRoot := t.TempDir()
+	rootDir := t.TempDir()
+	createdAt := time.Date(2026, 5, 14, 13, 30, 0, 0, time.UTC)
+	persistIndexedCollection(t, testStoreConfig(rootDir, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt), nil)
+	registerCollectionAt(t, dataRoot, rootDir)
+
+	extractor := &fakeTagExtractor{err: errors.New("boom")}
+	store := &recordingVectorStore{}
+	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
+		GetProvider: func(name string) (registry.ProviderFactory, error) {
+			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
+				return &fakeProvider{vector: []float32{1, 0, 0}}, nil
+			}, nil
+		},
+		GetTagExtractor: func(name string) (domain.TagExtractorFactory, error) {
+			return func(config domain.TagExtractorConfig) (domain.TagExtractor, error) {
+				return extractor, nil
+			}, nil
+		},
+		GetVectorStore: func(name string) (registry.VectorStoreFactory, error) {
+			return func(config domain.StoreConfig) (domain.VectorStore, error) {
+				return store, nil
+			}, nil
+		},
+	})
+
+	_, err := service.Run(context.Background(), Request{
+		Text:         "this is a long query about something",
+		Path:         rootDir,
+		TagWeight:    0.3,
+		MMRLambda:    1.0,
+		TagExtractor: domain.TagExtractorConfig{Provider: "ollama", Model: "qwen2.5:7b"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, extractor.calls)
+	require.Len(t, store.searchQueries, 1)
+	require.False(t, store.searchQueries[0].UseTagFusion)
+	require.Nil(t, store.searchQueries[0].TagVector)
+}
+
+func TestServiceRunUsesQueryTagVectorWhenExtractionSucceeds(t *testing.T) {
+	t.Parallel()
+
+	dataRoot := t.TempDir()
+	rootDir := t.TempDir()
+	createdAt := time.Date(2026, 5, 14, 14, 0, 0, 0, time.UTC)
+	persistIndexedCollection(t, testStoreConfig(rootDir, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt), nil)
+	registerCollectionAt(t, dataRoot, rootDir)
+
+	extractor := &fakeTagExtractor{tags: []string{"topic1", "topic2"}}
+	store := &recordingVectorStore{}
+	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
+		GetProvider: func(name string) (registry.ProviderFactory, error) {
+			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
+				return &fakeProvider{vector: []float32{1, 0, 0}}, nil
+			}, nil
+		},
+		GetTagExtractor: func(name string) (domain.TagExtractorFactory, error) {
+			return func(config domain.TagExtractorConfig) (domain.TagExtractor, error) {
+				return extractor, nil
+			}, nil
+		},
+		GetVectorStore: func(name string) (registry.VectorStoreFactory, error) {
+			return func(config domain.StoreConfig) (domain.VectorStore, error) {
+				return store, nil
+			}, nil
+		},
+	})
+
+	_, err := service.Run(context.Background(), Request{
+		Text:         "this is a long query about something",
+		Path:         rootDir,
+		TagWeight:    0.35,
+		MMRLambda:    1.0,
+		TagExtractor: domain.TagExtractorConfig{Provider: "ollama", Model: "qwen2.5:7b"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, extractor.calls)
+	require.Len(t, store.searchQueries, 1)
+	require.True(t, store.searchQueries[0].UseTagFusion)
+	require.Equal(t, 0.35, store.searchQueries[0].TagWeight)
+	require.Equal(t, []float32{1, 0, 0}, store.searchQueries[0].TagVector)
+}
+
+func TestServiceRunExtractsQueryTagsOnceAcrossMultipleCollections(t *testing.T) {
+	t.Parallel()
+
+	dataRoot := t.TempDir()
+	workspace := t.TempDir()
+	firstRoot := filepath.Join(workspace, "first")
+	secondRoot := filepath.Join(workspace, "second")
+	require.NoError(t, os.MkdirAll(firstRoot, 0o755))
+	require.NoError(t, os.MkdirAll(secondRoot, 0o755))
+	createdAt := time.Date(2026, 5, 14, 14, 30, 0, 0, time.UTC)
+	firstConfig := testStoreConfig(firstRoot, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt)
+	secondConfig := testStoreConfig(secondRoot, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt)
+	persistIndexedCollection(t, firstConfig, nil)
+	persistIndexedCollection(t, secondConfig, nil)
+	registerCollectionAt(t, dataRoot, firstRoot)
+	registerCollectionAt(t, dataRoot, secondRoot)
+
+	extractor := &fakeTagExtractor{tags: []string{"topic1", "topic2"}}
+	stores := map[string]*recordingVectorStore{
+		firstConfig.CollectionID:  {},
+		secondConfig.CollectionID: {},
+	}
+	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
+		GetProvider: func(name string) (registry.ProviderFactory, error) {
+			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
+				return &fakeProvider{vector: []float32{1, 0, 0}}, nil
+			}, nil
+		},
+		GetTagExtractor: func(name string) (domain.TagExtractorFactory, error) {
+			return func(config domain.TagExtractorConfig) (domain.TagExtractor, error) {
+				return extractor, nil
+			}, nil
+		},
+		GetVectorStore: func(name string) (registry.VectorStoreFactory, error) {
+			return func(config domain.StoreConfig) (domain.VectorStore, error) {
+				store, ok := stores[config.CollectionID]
+				require.True(t, ok, "unexpected collection id %q", config.CollectionID)
+				return store, nil
+			}, nil
+		},
+	})
+
+	_, err := service.Run(context.Background(), Request{
+		Text:           "this is a long query about something",
+		TagWeight:      0.3,
+		ThresholdAlpha: -1,
+		ThresholdDelta: -1,
+		MMRLambda:      1.0,
+		TagExtractor:   domain.TagExtractorConfig{Provider: "ollama", Model: "qwen2.5:7b"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, extractor.calls)
+	for _, store := range stores {
+		require.Len(t, store.searchQueries, 1)
+		require.True(t, store.searchQueries[0].UseTagFusion)
+		require.Equal(t, []float32{1, 0, 0}, store.searchQueries[0].TagVector)
+	}
+}
+
+func TestServiceRunCachesQueryTagVectorsPerCompatibleCollectionGroup(t *testing.T) {
+	t.Parallel()
+
+	dataRoot := t.TempDir()
+	workspace := t.TempDir()
+	firstRoot := filepath.Join(workspace, "first")
+	secondRoot := filepath.Join(workspace, "second")
+	require.NoError(t, os.MkdirAll(firstRoot, 0o755))
+	require.NoError(t, os.MkdirAll(secondRoot, 0o755))
+	createdAt := time.Date(2026, 5, 14, 14, 45, 0, 0, time.UTC)
+	firstConfig := testStoreConfig(firstRoot, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt)
+	secondConfig := testStoreConfig(secondRoot, dataRoot, openai.Name, openai.DefaultModel, 2, createdAt)
+	persistIndexedCollection(t, firstConfig, nil)
+	persistIndexedCollection(t, secondConfig, nil)
+	registerCollectionAt(t, dataRoot, firstRoot)
+	registerCollectionAt(t, dataRoot, secondRoot)
+
+	extractor := &fakeTagExtractor{tags: []string{"topic1", "topic2"}}
+	stores := map[string]*recordingVectorStore{
+		firstConfig.CollectionID:  {},
+		secondConfig.CollectionID: {},
+	}
+	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
+		GetProvider: func(name string) (registry.ProviderFactory, error) {
+			switch name {
+			case ollama.Name:
+				return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
+					return &fakeProvider{vector: []float32{1, 0, 0}}, nil
+				}, nil
+			case openai.Name:
+				return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
+					return &fakeProvider{vector: []float32{0, 1}}, nil
+				}, nil
+			default:
+				return nil, fmt.Errorf("unexpected provider %q", name)
+			}
+		},
+		GetTagExtractor: func(name string) (domain.TagExtractorFactory, error) {
+			return func(config domain.TagExtractorConfig) (domain.TagExtractor, error) {
+				return extractor, nil
+			}, nil
+		},
+		GetVectorStore: func(name string) (registry.VectorStoreFactory, error) {
+			return func(config domain.StoreConfig) (domain.VectorStore, error) {
+				store, ok := stores[config.CollectionID]
+				require.True(t, ok, "unexpected collection id %q", config.CollectionID)
+				return store, nil
+			}, nil
+		},
+	})
+
+	_, err := service.Run(context.Background(), Request{
+		Text:           "this is a long query about something",
+		TagWeight:      0.3,
+		ThresholdAlpha: -1,
+		ThresholdDelta: -1,
+		MMRLambda:      1.0,
+		TagExtractor:   domain.TagExtractorConfig{Provider: "ollama", Model: "qwen2.5:7b"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, extractor.calls)
+	require.Len(t, stores[firstConfig.CollectionID].searchQueries, 1)
+	require.Len(t, stores[secondConfig.CollectionID].searchQueries, 1)
+	require.True(t, stores[firstConfig.CollectionID].searchQueries[0].UseTagFusion)
+	require.True(t, stores[secondConfig.CollectionID].searchQueries[0].UseTagFusion)
+	require.Equal(t, []float32{1, 0, 0}, stores[firstConfig.CollectionID].searchQueries[0].TagVector)
+	require.Equal(t, []float32{0, 1}, stores[secondConfig.CollectionID].searchQueries[0].TagVector)
 }
 
 func TestServiceRunAppliesBM25RerankAfterGlobalMerge(t *testing.T) {
@@ -1189,6 +1546,12 @@ type fakeProvider struct {
 	model  domain.ModelSpec
 }
 
+type fakeTagExtractor struct {
+	tags  []string
+	err   error
+	calls int
+}
+
 type recordingVectorStore struct {
 	results       []domain.SearchResult
 	searchQueries []domain.SearchQuery
@@ -1254,8 +1617,20 @@ func (e *fakeEmbedder) Model() domain.ModelSpec {
 }
 
 func (e *fakeEmbedder) Embed(_ context.Context, request domain.EmbedRequest) ([]domain.Embedding, error) {
-	if len(request.Inputs) != 1 {
-		return nil, errors.New("expected exactly one query input")
+	if len(request.Inputs) == 0 {
+		return nil, errors.New("expected at least one query input")
 	}
-	return []domain.Embedding{{ChunkID: request.Inputs[0].ChunkID, Vector: append([]float32(nil), e.vector...)}}, nil
+	results := make([]domain.Embedding, 0, len(request.Inputs))
+	for _, input := range request.Inputs {
+		results = append(results, domain.Embedding{ChunkID: input.ChunkID, Vector: append([]float32(nil), e.vector...)})
+	}
+	return results, nil
+}
+
+func (e *fakeTagExtractor) Extract(_ context.Context, _ domain.TagExtractRequest) (domain.TagExtractResult, error) {
+	e.calls++
+	if e.err != nil {
+		return domain.TagExtractResult{}, e.err
+	}
+	return domain.TagExtractResult{Tags: append([]string(nil), e.tags...)}, nil
 }
