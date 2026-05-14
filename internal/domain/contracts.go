@@ -72,25 +72,31 @@ type Embedding struct {
 }
 
 type VectorRecord struct {
-	Chunk  Chunk
-	Vector []float32
+	Chunk        Chunk
+	Vector       []float32
+	TagVector    []float32
+	SemanticTags []string
 }
 
 type EmbeddedChunk = VectorRecord
 
 type SearchQuery struct {
-	Vector     []float32
-	Limit      int
-	Tags       []string
-	PathPrefix string
-	MinScore   float64
+	Vector       []float32
+	TagVector    []float32
+	Limit        int
+	Tags         []string
+	PathPrefix   string
+	MinScore     float64
+	TagWeight    float64
+	UseTagFusion bool
 }
 
 type SearchResult struct {
-	Chunk  Chunk
-	Score  float64
-	Rank   int
-	Vector []float32
+	Chunk    Chunk
+	Score    float64
+	TagScore float64
+	Rank     int
+	Vector   []float32
 }
 
 type SearchResults []SearchResult
@@ -173,17 +179,19 @@ type ScanProviderConfig struct {
 	Provider        string
 	ProviderOptions map[string]string
 	Model           string
+	TagExtractor    TagExtractorConfig
 	Recursive       bool
 	Force           bool
 }
 
 type ScanProviderRequest struct {
-	File        SourceFile
-	Config      ScanProviderConfig
-	Recipe      EmbedRecipe
-	Now         func() time.Time
-	GetProvider func(name string) (func(ProviderConfig) (EmbedderProvider, error), error)
-	GetSplitter func(name string) (func(SplitterSpec) (Splitter, error), error)
+	File            SourceFile
+	Config          ScanProviderConfig
+	Recipe          EmbedRecipe
+	Now             func() time.Time
+	GetProvider     func(name string) (func(ProviderConfig) (EmbedderProvider, error), error)
+	GetSplitter     func(name string) (func(SplitterSpec) (Splitter, error), error)
+	GetTagExtractor func(config TagExtractorConfig) (TagExtractor, error)
 }
 
 type ScanProviderResult struct {

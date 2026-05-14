@@ -28,13 +28,23 @@ type SplitterSpec struct {
 	Options map[string]string
 }
 
+type TagExtractorRecipeSpec struct {
+	Provider      string
+	Model         string
+	MaxTags       int
+	MinTagLen     int
+	MaxTagLen     int
+	SkipIfHasYAML bool
+}
+
 type EmbedRecipe struct {
-	Type     string
-	Version  string
-	Provider ProviderConfig
-	Model    ModelSpec
-	Splitter SplitterSpec
-	Flags    map[string]bool
+	Type         string
+	Version      string
+	Provider     ProviderConfig
+	Model        ModelSpec
+	Splitter     SplitterSpec
+	TagExtractor *TagExtractorRecipeSpec
+	Flags        map[string]bool
 }
 
 func (r EmbedRecipe) Validate() error {
@@ -94,8 +104,11 @@ func (r EmbedRecipe) Identifier() string {
 		"splitter.name=" + strings.TrimSpace(r.Splitter.Name),
 		"splitter.version=" + strings.TrimSpace(r.Splitter.Version),
 		"splitter.options=" + splitterOptions,
-		"flags=" + flags,
 	}
+	if r.TagExtractor != nil {
+		parts = append(parts, "tag_extractor="+canonicalTagExtractorRecipeSpec(r.TagExtractor))
+	}
+	parts = append(parts, "flags="+flags)
 
 	return strings.Join(parts, "|")
 }
@@ -143,6 +156,23 @@ func canonicalBoolMap(values map[string]bool) string {
 	parts := make([]string, 0, len(keys))
 	for _, key := range keys {
 		parts = append(parts, fmt.Sprintf("%s=%t", key, values[key]))
+	}
+
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
+func canonicalTagExtractorRecipeSpec(spec *TagExtractorRecipeSpec) string {
+	if spec == nil {
+		return ""
+	}
+
+	parts := []string{
+		"provider=" + strings.TrimSpace(spec.Provider),
+		"model=" + strings.TrimSpace(spec.Model),
+		fmt.Sprintf("max_tags=%d", spec.MaxTags),
+		fmt.Sprintf("min_tag_len=%d", spec.MinTagLen),
+		fmt.Sprintf("max_tag_len=%d", spec.MaxTagLen),
+		fmt.Sprintf("skip_if_has_yaml=%t", spec.SkipIfHasYAML),
 	}
 
 	return "{" + strings.Join(parts, ",") + "}"
