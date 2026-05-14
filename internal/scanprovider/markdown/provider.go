@@ -3,6 +3,7 @@ package markdown
 import (
 	"context"
 	"fmt"
+	"log"
 	"strconv"
 
 	"github.com/bspiritxp/jcemb/internal/domain"
@@ -33,7 +34,7 @@ func (Provider) Extensions() []string {
 }
 
 func (Provider) Recipe(config domain.ScanProviderConfig) domain.EmbedRecipe {
-	return domain.EmbedRecipe{
+	recipe := domain.EmbedRecipe{
 		Type:    FileType,
 		Version: Version,
 		Provider: domain.ProviderConfig{
@@ -56,6 +57,10 @@ func (Provider) Recipe(config domain.ScanProviderConfig) domain.EmbedRecipe {
 			"force":     config.Force,
 		},
 	}
+	if spec := recipeTagExtractorSpec(config.TagExtractor); spec != nil {
+		recipe.TagExtractor = spec
+	}
+	return recipe
 }
 
 func (Provider) BuildRecords(ctx context.Context, request domain.ScanProviderRequest) (domain.ScanProviderResult, error) {
@@ -99,6 +104,11 @@ func (Provider) BuildRecords(ctx context.Context, request domain.ScanProviderReq
 		return domain.ScanProviderResult{}, err
 	}
 
+	semanticTags, tagVector, err := buildSemanticTagData(ctx, request, document, embedder)
+	if err != nil {
+		return domain.ScanProviderResult{}, err
+	}
+
 	records := make([]domain.VectorRecord, 0, len(chunks))
 	chunkIDs := make([]string, 0, len(chunks))
 	if len(chunks) > 0 {
@@ -123,7 +133,12 @@ func (Provider) BuildRecords(ctx context.Context, request domain.ScanProviderReq
 			if !ok {
 				return domain.ScanProviderResult{}, fmt.Errorf("scan: missing vector for chunk %s", chunk.ID)
 			}
-			records = append(records, domain.VectorRecord{Chunk: chunk, Vector: vector})
+			records = append(records, domain.VectorRecord{
+				Chunk:        chunk,
+				Vector:       vector,
+				TagVector:    append([]float32(nil), tagVector...),
+				SemanticTags: append([]string(nil), semanticTags...),
+			})
 			chunkIDs = append(chunkIDs, chunk.ID)
 		}
 	}
@@ -156,4 +171,112 @@ func cloneStringMap(values map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func buildSemanticTagData(ctx context.Context, request domain.ScanProviderRequest, document domain.Document, embedder domain.Embedder) ([]string, []float32, error) {
+	semanticTags, err := extractSemanticTags(ctx, request, document)
+	if err != nil {
+		log.Printf("markdown: tag extraction failed for %s: %v", document.RelPath, err)
+		return nil, nil, nil
+	}
+	if len(semanticTags) == 0 {
+		return nil, nil, nil
+	}
+
+	inputs := make([]domain.EmbedInput, 0, len(semanticTags))
+	for index, tag := range semanticTags {
+		inputs = append(inputs, domain.EmbedInput{
+			ChunkID:  fmt.Sprintf("tag-%d", index),
+			Text:     tag,
+			Metadata: domain.ChunkMetadata{RelPath: document.RelPath, DocType: FileType},
+		})
+	}
+	embeddings, err := embedder.Embed(ctx, domain.EmbedRequest{Recipe: request.Recipe, Inputs: inputs, Purpose: domain.EmbedPurposeDocument})
+	if err != nil {
+		return nil, nil, err
+	}
+	vectors := make(map[string][]float32, len(embeddings))
+	for _, embedding := range embeddings {
+		vectors[embedding.ChunkID] = append([]float32(nil), embedding.Vector...)
+	}
+	ordered := make([][]float32, 0, len(inputs))
+	for _, input := range inputs {
+		vector, ok := vectors[input.ChunkID]
+		if !ok {
+			return nil, nil, fmt.Errorf("scan: missing tag vector for %s", input.ChunkID)
+		}
+		ordered = append(ordered, vector)
+	}
+	pooled, err := meanPoolNormalized(ordered)
+	if err != nil {
+		return nil, nil, err
+	}
+	return append([]string(nil), semanticTags...), pooled, nil
+}
+
+func extractSemanticTags(ctx context.Context, request domain.ScanProviderRequest, document domain.Document) ([]string, error) {
+	spec := request.Recipe.TagExtractor
+	if spec == nil {
+		return nil, nil
+	}
+	if spec.SkipIfHasYAML && len(document.Tags) > 0 {
+		return append([]string(nil), document.Tags...), nil
+	}
+	if request.GetTagExtractor == nil {
+		return nil, fmt.Errorf("scan: tag extractor getter is required")
+	}
+	config := domain.TagExtractorConfig{
+		Provider:      firstNonEmpty(request.Config.TagExtractor.Provider, spec.Provider),
+		Model:         firstNonEmpty(request.Config.TagExtractor.Model, spec.Model),
+		Options:       cloneStringMap(request.Config.TagExtractor.Options),
+		Timeout:       request.Config.TagExtractor.Timeout,
+		MaxTags:       firstPositive(request.Config.TagExtractor.MaxTags, spec.MaxTags),
+		MinTagLen:     firstPositive(request.Config.TagExtractor.MinTagLen, spec.MinTagLen),
+		MaxTagLen:     firstPositive(request.Config.TagExtractor.MaxTagLen, spec.MaxTagLen),
+		SkipIfHasYAML: spec.SkipIfHasYAML || request.Config.TagExtractor.SkipIfHasYAML,
+	}
+	extractor, err := request.GetTagExtractor(config)
+	if err != nil {
+		return nil, err
+	}
+	result, err := extractor.Extract(ctx, domain.TagExtractRequest{Document: document, Config: config})
+	if err != nil {
+		return nil, err
+	}
+	if len(result.Tags) == 0 {
+		return nil, nil
+	}
+	return append([]string(nil), result.Tags...), nil
+}
+
+func recipeTagExtractorSpec(config domain.TagExtractorConfig) *domain.TagExtractorRecipeSpec {
+	if config.Provider == "" || config.Model == "" {
+		return nil
+	}
+	return &domain.TagExtractorRecipeSpec{
+		Provider:      config.Provider,
+		Model:         config.Model,
+		MaxTags:       config.MaxTags,
+		MinTagLen:     config.MinTagLen,
+		MaxTagLen:     config.MaxTagLen,
+		SkipIfHasYAML: config.SkipIfHasYAML,
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstPositive(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
