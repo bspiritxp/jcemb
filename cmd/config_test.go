@@ -75,3 +75,31 @@ func TestConfigCommandReturnsBootstrapValidationError(t *testing.T) {
 	err := cmd.Execute()
 	require.ErrorIs(t, err, expectedErr)
 }
+
+func TestConfigCommandMapsTagExtractorFlags(t *testing.T) {
+	bootstrap := app.Bootstrap{Config: config.RuntimeConfig{Path: "config-path.json", Settings: config.DefaultSettings()}}
+	cmd := newConfigCmd(bootstrap, func(request app.ConfigCommandRequest) (app.ConfigCommandResult, error) {
+		require.NotNil(t, request.Updates.TagExtractorEnabled)
+		require.False(t, *request.Updates.TagExtractorEnabled)
+		require.NotNil(t, request.Updates.TagExtractorProvider)
+		require.Equal(t, "openai", *request.Updates.TagExtractorProvider)
+		require.NotNil(t, request.Updates.TagExtractorModel)
+		require.Equal(t, "gpt-4.1-mini", *request.Updates.TagExtractorModel)
+		require.NotNil(t, request.Updates.TagExtractorMaxTags)
+		require.Equal(t, 6, *request.Updates.TagExtractorMaxTags)
+		require.NotNil(t, request.Updates.TagExtractorSkipIfHasYAML)
+		require.False(t, *request.Updates.TagExtractorSkipIfHasYAML)
+		return app.ConfigCommandResult{}, nil
+	})
+	cmd.SetIn(bytes.NewBufferString(""))
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{
+		"--set-tag-extractor-enabled=false",
+		"--set-tag-extractor-provider=openai",
+		"--set-tag-extractor-model=gpt-4.1-mini",
+		"--set-tag-extractor-max-tags=6",
+		"--set-tag-extractor-skip-if-has-yaml=false",
+	})
+
+	require.NoError(t, cmd.Execute())
+}

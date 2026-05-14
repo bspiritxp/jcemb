@@ -63,6 +63,11 @@ func newConfigCmd(bootstrap app.Bootstrap, runner configCommandRunner) *cobra.Co
 	cmd.Flags().StringVar(ptrString(&updates.ImageDevice), "set-image-device", "", "set image embedding device")
 	cmd.Flags().StringVar(ptrString(&updates.ImagePython), "set-image-python", "", "set image embedding Python executable")
 	cmd.Flags().StringVar(ptrString(&updates.ImageVision), "set-image-vision-model", "", "set image captioning vision model")
+	cmd.Flags().BoolVar(ptrBool(&updates.TagExtractorEnabled), "set-tag-extractor-enabled", false, "set whether semantic tag extraction is enabled")
+	cmd.Flags().StringVar(ptrString(&updates.TagExtractorProvider), "set-tag-extractor-provider", "", "set semantic tag extraction provider")
+	cmd.Flags().StringVar(ptrString(&updates.TagExtractorModel), "set-tag-extractor-model", "", "set semantic tag extraction model")
+	cmd.Flags().IntVar(ptrInt(&updates.TagExtractorMaxTags), "set-tag-extractor-max-tags", 0, "set maximum semantic tags per document")
+	cmd.Flags().BoolVar(ptrBool(&updates.TagExtractorSkipIfHasYAML), "set-tag-extractor-skip-if-has-yaml", false, "skip semantic tag extraction when YAML tags already exist")
 	cmd.PreRunE = func(cmd *cobra.Command, args []string) error {
 		cmd.Flags().Visit(func(flag *pflag.Flag) {
 			switch flag.Name {
@@ -106,6 +111,16 @@ func newConfigCmd(bootstrap app.Bootstrap, runner configCommandRunner) *cobra.Co
 				updates.ImagePython = stringPtr(flag.Value.String())
 			case "set-image-vision-model":
 				updates.ImageVision = stringPtr(flag.Value.String())
+			case "set-tag-extractor-enabled":
+				updates.TagExtractorEnabled = boolPtr(flag.Value.String())
+			case "set-tag-extractor-provider":
+				updates.TagExtractorProvider = stringPtr(flag.Value.String())
+			case "set-tag-extractor-model":
+				updates.TagExtractorModel = stringPtr(flag.Value.String())
+			case "set-tag-extractor-max-tags":
+				updates.TagExtractorMaxTags = intPtr(flag.Value.String())
+			case "set-tag-extractor-skip-if-has-yaml":
+				updates.TagExtractorSkipIfHasYAML = boolPtr(flag.Value.String())
 			}
 		})
 		return nil
@@ -125,11 +140,22 @@ func ptrInt(target **int) *int {
 	return &value
 }
 
+func ptrBool(target **bool) *bool {
+	value := false
+	*target = nil
+	return &value
+}
+
 func stringPtr(value string) *string {
 	return &value
 }
 
 func intPtr(value string) *int {
 	parsed, _ := strconv.Atoi(value)
+	return &parsed
+}
+
+func boolPtr(value string) *bool {
+	parsed, _ := strconv.ParseBool(value)
 	return &parsed
 }
