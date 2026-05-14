@@ -55,6 +55,7 @@ func newScanCmd(bootstrap app.Bootstrap) *cobra.Command {
 				Provider:        options.Provider,
 				ProviderOptions: bootstrap.Config.Settings.ProviderOptions(options.Provider),
 				Model:           options.Model,
+				TagExtractor:    appTagExtractorConfig(bootstrap.Config.Settings),
 				Recursive:       options.Recursive,
 				Force:           options.Force,
 				ExcludePatterns: append([]string(nil), options.ExcludePatterns...),

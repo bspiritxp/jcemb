@@ -8,6 +8,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type queryCommandRunner func(app.QueryRequest) error
+
 type QueryOptions struct {
 	Tags           []string
 	Limit          int
@@ -17,6 +19,8 @@ type QueryOptions struct {
 	JSON           bool
 	Unique         bool
 	Full           bool
+	NoTag          bool
+	TagWeight      float64
 	ThresholdAlpha float64
 	ThresholdDelta float64
 	MMRLambda      float64
@@ -25,15 +29,16 @@ type QueryOptions struct {
 }
 
 func NewQueryCmd() *cobra.Command {
-	return newQueryCmd(app.NewBootstrap())
+	return newQueryCmd(app.NewBootstrap(), app.Query)
 }
 
-func newQueryCmd(bootstrap app.Bootstrap) *cobra.Command {
+func newQueryCmd(bootstrap app.Bootstrap, runner queryCommandRunner) *cobra.Command {
 	options := QueryOptions{
-		Limit:    10,
-		FileType: "markdown",
-		Format:   "text",
-		Rerank:   "off",
+		Limit:     10,
+		FileType:  "markdown",
+		Format:    "text",
+		Rerank:    "off",
+		TagWeight: 0.3,
 	}
 
 	cmd := &cobra.Command{
@@ -52,8 +57,11 @@ func newQueryCmd(bootstrap app.Bootstrap) *cobra.Command {
 			if err := bootstrap.Validate(); err != nil {
 				return err
 			}
+			if options.TagWeight < 0 || options.TagWeight > 1 {
+				return fmt.Errorf("tag-weight must be between 0 and 1")
+			}
 
-			return app.Query(app.QueryRequest{
+			return runner(app.QueryRequest{
 				Text:            args[0],
 				Tags:            options.Tags,
 				Limit:           options.Limit,
@@ -61,7 +69,10 @@ func newQueryCmd(bootstrap app.Bootstrap) *cobra.Command {
 				DataDir:         bootstrap.Config.Settings.DataDir,
 				Provider:        bootstrap.Config.Settings.Provider,
 				ProviderOptions: bootstrap.Config.Settings.ProviderOptions(bootstrap.Config.Settings.Provider),
+				TagExtractor:    appTagExtractorConfig(bootstrap.Config.Settings),
 				FileType:        options.FileType,
+				NoTag:           options.NoTag,
+				TagWeight:       options.TagWeight,
 				Format:          options.Format,
 				JSON:            options.JSON,
 				Unique:          options.Unique,
@@ -83,6 +94,8 @@ func newQueryCmd(bootstrap app.Bootstrap) *cobra.Command {
 	cmd.Flags().BoolVar(&options.JSON, "json", options.JSON, "output results as JSON")
 	cmd.Flags().BoolVarP(&options.Unique, "unique", "u", options.Unique, "deduplicate results by document (keep highest-scoring chunk per file)")
 	cmd.Flags().BoolVar(&options.Full, "full", options.Full, "show full chunk content instead of truncated preview")
+	cmd.Flags().BoolVar(&options.NoTag, "no-tag", options.NoTag, "disable tag fusion for query ranking")
+	cmd.Flags().Float64Var(&options.TagWeight, "tag-weight", options.TagWeight, "tag fusion weight between 0 and 1 (0 disables tag fusion)")
 	cmd.Flags().Float64Var(&options.ThresholdAlpha, "threshold-alpha", options.ThresholdAlpha, "relative-to-top1 cutoff (0=auto default, negative=disable)")
 	cmd.Flags().Float64Var(&options.ThresholdDelta, "threshold-delta", options.ThresholdDelta, "absolute gap from top1 cutoff (0=auto default, negative=disable)")
 	cmd.Flags().Float64Var(&options.MMRLambda, "mmr-lambda", options.MMRLambda, "MMR lambda; 1.0 disables MMR (pure score order), negative also disables")
