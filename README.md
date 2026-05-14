@@ -19,6 +19,7 @@ without running a separate vector database service.
 - Incremental rescanning based on file and recipe hashes.
 - Cleanup of deleted or renamed files on the next scan.
 - YAML front matter tag extraction.
+- Optional semantic tag extraction and tag/content score fusion for Markdown.
 - Tag filtering with AND semantics.
 - Text and JSON query output.
 - Built-in result denoising with thresholding, deduplication, and MMR.
@@ -159,6 +160,8 @@ Common flags:
 | `-l, --limit` | Maximum number of results. Default: `10`. |
 | `-t, --file-type` | File type to query. Default: `markdown`; use `image` for image search. |
 | `--tags` | Required tags filter. Multiple tags use AND semantics. |
+| `--no-tag` | Disable semantic tag fusion for query ranking. |
+| `--tag-weight` | Semantic tag fusion weight between `0` and `1`. `0` disables fusion. Default: `0.3`. |
 | `-u, --unique` | Deduplicate results by Markdown file. |
 | `--full` | Show full chunk content instead of a preview. |
 | `--json` | Output the final result list as JSON. |
@@ -171,6 +174,23 @@ When `--path` is omitted, `query` searches all indexed collections in the
 global store. When `--path` points to a file or directory, `jcemb` resolves the
 collection identity and filters results by the relative path prefix; directory
 paths include all descendants.
+
+For Markdown queries, `jcemb` can extract semantic tags from the query text,
+embed those tags, and fuse the tag score with the normal content score. Use
+`--tag-weight` to tune the blend or `--no-tag` to force pure content ranking:
+
+```bash
+./jcemb query "oauth callback state mismatch during login" --tag-weight 0.6
+./jcemb query "oauth callback state mismatch during login" --no-tag
+```
+
+Real fallback behavior:
+
+- `--tags` is a hard pre-filter and still runs before any score fusion.
+- Short text queries, fewer than 10 runes after trimming, use content-only ranking.
+- Image queries, including `--file-type image` and image-path queries, use content-only ranking.
+- If semantic tag extraction returns no tags or fails, `jcemb` falls back to content-only ranking.
+- `--tag-weight 0` is equivalent to disabling tag fusion.
 
 ### `show`
 
@@ -276,6 +296,10 @@ jcemb query "callback flow" --path /path/to/docs --tags architecture,gateway
 
 All requested tags must be present on the matched document.
 
+YAML tags and semantic tags serve different jobs. YAML front matter tags, and
+image caption tags, power the hard `--tags` filter. Semantic tags are separate
+query-time and document-time signals used only for score fusion.
+
 ## How It Works
 
 1. `scan` discovers registered file extensions and skips ignored directories
@@ -289,7 +313,12 @@ All requested tags must be present on the matched document.
    storage directory.
 5. `query` embeds the search input with the stored file-type config. For
    `--file-type image`, an existing image path is treated as image-to-image search.
-6. Results are sorted, thresholded, optionally deduplicated, diversified with
+6. For Markdown queries that are long enough and do not disable fusion,
+   `query` also extracts semantic tags, embeds them into a pooled tag vector,
+   and blends tag score with content score using `--tag-weight`.
+7. If the query is short, is an image query, or tag extraction fails, ranking
+   falls back to content-only.
+8. Results are sorted, thresholded, optionally deduplicated, diversified with
    MMR, and then rendered as text or JSON.
 
 Legacy `.vectordb` directories are no longer created. If a legacy `.vectordb` is

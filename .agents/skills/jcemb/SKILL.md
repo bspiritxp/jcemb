@@ -19,6 +19,7 @@ version: 0.1.0
 - **多文件类型**: 支持 Markdown (`.md`) 和图片 (`.png`, `.jpg`, `.jpeg`, `.webp` 等)
 - **多 Provider**: 支持 Ollama（默认）和 OpenAI 作为 embedding provider
 - **语义搜索**: 使用向量相似度进行语义查询，而不仅仅是关键词匹配
+- **语义标签融合**: Markdown 可提取语义标签并与内容分数融合排序
 
 ## 适用场景
 
@@ -67,6 +68,12 @@ jcemb scan /path/to/docs -r -p openai -m text-embedding-3-small
 # 查询 Markdown（默认）
 jcemb query "how do I configure the gateway?" -l 10
 
+# 调整语义标签融合权重
+./jcemb query "oauth callback state mismatch during login" --tag-weight 0.6
+
+# 禁用语义标签融合，强制只看内容向量
+./jcemb query "oauth callback state mismatch during login" --no-tag
+
 # 查询图片（文本描述搜图）
 jcemb query "red bicycle" --file-type image
 
@@ -87,10 +94,19 @@ jcemb query "API docs" --path /path/to/docs
 - `-l, --limit`: 最大返回结果数（默认：10）
 - `-t, --file-type`: 文件类型（默认：markdown；图片搜索用 `image`）
 - `--tags`: 标签过滤（多个标签用逗号分隔，AND 语义）
+- `--tag-weight`: 语义标签融合权重，范围 `0` 到 `1`，`0` 表示禁用融合，默认 `0.3`
+- `--no-tag`: 禁用 query 侧语义标签融合，强制 content-only 排序
 - `--path`: 限制到特定路径
 - `--json`: JSON 输出
 - `--unique`: 按文件去重
 - `--full`: 显示完整内容而非预览
+
+**标签融合行为**:
+- `--tags` 仍是硬过滤，先过滤，再做融合排序
+- 文本 query 去空白后少于 10 个 rune 时，不做 query 标签提取，直接 content-only
+- 图片 query，包括 `--file-type image` 和图片路径 query，不做 query 标签提取，直接 content-only
+- 语义标签提取失败，或没有提取到标签时，自动回退到 content-only
+- Markdown 文档的 YAML front matter 标签，与图片 caption 标签，继续用于硬过滤；语义标签是独立信号，只进入 `TagVector` 融合排序
 
 ### 3. show — 查看文件详细信息
 
@@ -154,7 +170,8 @@ jcemb config
 1. **自然语言**: 使用完整的句子或问题，而非关键词
 2. **路径限制**: 使用 `--path` 缩小搜索范围，提高准确性
 3. **标签过滤**: 结合 `--tags` 进行精确过滤
-4. **图片搜索**: 描述越具体，结果越准确
+4. **融合调节**: 召回偏语义主题时提高 `--tag-weight`，想看纯内容相似度时用 `--no-tag`
+5. **图片搜索**: 描述越具体，结果越准确
 
 ### 图片处理
 
@@ -198,6 +215,7 @@ jcemb config
 2. **图片处理失败**: 可能是图片格式问题或 Ollama vision model 崩溃，尝试转换格式或减少并发
 3. **未找到结果**: 确认文件已扫描，使用 `jcemb collection list` 查看集合状态
 4. **向量维度不匹配**: 不同 provider/model 可能产生不同维度的向量，需保持一致
+5. **标签融合没有生效**: 检查 query 是否太短、是否是图片 query、是否显式传了 `--no-tag`，或 tag extractor 是否提取失败
 
 ## 典型工作流
 

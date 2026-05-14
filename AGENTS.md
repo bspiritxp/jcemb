@@ -10,6 +10,7 @@ A local-first Go CLI (`jcemb`) that embeds registered file types into a local ve
 - Default provider: `ollama`, default model: `bge-m3`.
 - Output is stored in the configured global data directory (JSON index + records file, not a real LanceDB server).
 - Markdown tags come **only** from YAML front matter. Image tags come from the image scan provider metadata.
+- Semantic tags are separate from hard filter tags. They feed `TagVector` and optional query-time tag/content fusion.
 
 ## Build & run
 
@@ -79,10 +80,11 @@ both package repositories.
 | `cmd/` | Cobra command layer: flag parsing, thin dispatch. No business logic. |
 | `internal/app/` | Service orchestration (`scan`, `query`, `show`) |
 | `internal/domain/` | Core contracts: `Document`, `Chunk`, `VectorStore`, `Embedder`, etc. |
-| `internal/registry/` | Self-registration factories for provider / splitter / vector store / scan provider |
+| `internal/registry/` | Self-registration factories for provider / splitter / vector store / scan provider / tag extractor |
 | `internal/provider/ollama/` | Default embedding provider (HTTP to local Ollama) |
 | `internal/scanprovider/` | File-type scan providers (`markdown`, `image`) |
 | `internal/splitter/markdown/` | Markdown structural splitter (headings → chunks) |
+| `internal/tagextractor/` | Semantic tag extraction helpers and provider implementations used at scan time and query time |
 | `internal/storage/lancedb/` | Local vector store adapter (JSON file, not real LanceDB) |
 | `internal/index/` | Versioned atomic JSON index (`config.json` + `index.json`) |
 | `internal/fs/` | File discovery; skips `.git`, `node_modules`, IDE/tool dirs, and OS recycle-bin / system metadata dirs (case-insensitive) — see `defaultIgnoredDirectoryNames` |
@@ -92,24 +94,27 @@ both package repositories.
 
 ## Registry & extension
 
-New providers, splitters, vector stores, and scan providers are added via `init()` self-registration:
+New providers, splitters, vector stores, scan providers, and tag extractors are added via `init()` self-registration:
 
 ```go
 import "github.com/bspiritxp/jcemb/internal/registry"
 
 func init() {
     registry.MustRegisterProvider("myprovider", factory)
+    registry.MustRegisterTagExtractor("mytags", tagFactory)
 }
 ```
 
 - Duplicate registration **panics**.
-- Tests can reset with `registry.ResetProviders()`, `registry.ResetSplitters()`, `registry.ResetVectorStores()`.
+- Tests can reset with `registry.ResetProviders()`, `registry.ResetSplitters()`, `registry.ResetVectorStores()`, `registry.ResetTagExtractors()`.
 
 ## Key conventions
 
 - **Incrementality**: scan skips unchanged files by comparing `file_hash + recipe_hash`. Use `--force` to rebuild all.
 - **Reconcile**: deleted/renamed files are cleaned from both index and vector store on the next scan.
 - **Tag filter**: `--tags a,b` means **AND** semantics (result must contain both tags).
+- **Tag fusion**: semantic tags are embedded separately from chunk content. `query --tag-weight` controls score blending, `query --no-tag` forces content-only ranking, and `--tags` still filters before fusion.
+- **Fallbacks**: query-time tag extraction is skipped for image queries and short text queries under 10 runes, and any extraction failure falls back to content-only ranking.
 - **File type filter**: `query --file-type/-t` defaults to `markdown`; use `image` for text-to-image and image-to-image search.
 - **Path filter**: `query --path` accepts a file or directory and filters by the relative prefix; directory paths include descendants. Omit `--path` for global search across all indexed collections.
 - **Chunk ID stability**: derived from `rel_path + recipe_hash + chunk_index (+ section fingerprint)` so re-embeds are deterministic.
@@ -134,6 +139,7 @@ func init() {
 
 - **Ollama** must be running locally at `http://localhost:11434` (default).
 - **bge-m3** model must be available (`ollama pull bge-m3`).
+- Semantic tag extraction needs a configured tag extractor model when enabled, for example Ollama `qwen2.5:7b` or an OpenAI chat model.
 - Image metadata requires an Ollama vision model (default provider option `vision_model` falls back to `llava`).
 - Image vectors default to OpenCLIP (`ViT-B-32` + `laion2b_s34b_b79k`, 512 dimensions) through a Python backend. `jina-clip` with `jinaai/jina-clip-v2` is supported by config.
 - OpenAI provider uses `/v1/embeddings`; recommended default is `text-embedding-3-small` (1536 dimensions). Image provider `openai` uses vision description + text embedding because OpenAI embedding models are text-only.
