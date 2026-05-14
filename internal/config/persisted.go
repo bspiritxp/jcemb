@@ -25,13 +25,14 @@ type RuntimeConfig struct {
 }
 
 type PersistedConfig struct {
-	DataDir   string                `json:"data_dir"`
-	Provider  string                `json:"provider"`
-	Model     string                `json:"model"`
-	VectorDim int                   `json:"vector_dim"`
-	Ollama    PersistedOllamaConfig `json:"ollama"`
-	OpenAI    PersistedOpenAIConfig `json:"openai"`
-	Image     PersistedImageConfig  `json:"image"`
+	DataDir      string                      `json:"data_dir"`
+	Provider     string                      `json:"provider"`
+	Model        string                      `json:"model"`
+	VectorDim    int                         `json:"vector_dim"`
+	Ollama       PersistedOllamaConfig       `json:"ollama"`
+	OpenAI       PersistedOpenAIConfig       `json:"openai"`
+	Image        PersistedImageConfig        `json:"image"`
+	TagExtractor PersistedTagExtractorConfig `json:"tag_extractor"`
 }
 
 type PersistedOllamaConfig struct {
@@ -59,14 +60,37 @@ type PersistedImageConfig struct {
 	VisionModel string `json:"vision_model"`
 }
 
+type PersistedTagExtractorConfig struct {
+	Enabled          bool              `json:"enabled"`
+	Provider         string            `json:"provider"`
+	Model            string            `json:"model"`
+	MaxTags          int               `json:"max_tags"`
+	MinTagLen        int               `json:"min_tag_len"`
+	MaxTagLen        int               `json:"max_tag_len"`
+	SkipIfHasYAML    bool              `json:"skip_if_has_yaml"`
+	Timeout          string            `json:"timeout"`
+	Options          map[string]string `json:"options,omitempty"`
+	present          bool
+	enabledSet       bool
+	providerSet      bool
+	modelSet         bool
+	maxTagsSet       bool
+	minTagLenSet     bool
+	maxTagLenSet     bool
+	skipIfHasYAMLSet bool
+	timeoutSet       bool
+	optionsSet       bool
+}
+
 type fileConfig struct {
-	DataDir   *string           `json:"data_dir,omitempty"`
-	Provider  *string           `json:"provider,omitempty"`
-	Model     *string           `json:"model,omitempty"`
-	VectorDim *int              `json:"vector_dim,omitempty"`
-	Ollama    *fileOllamaConfig `json:"ollama,omitempty"`
-	OpenAI    *fileOpenAIConfig `json:"openai,omitempty"`
-	Image     *fileImageConfig  `json:"image,omitempty"`
+	DataDir      *string                 `json:"data_dir,omitempty"`
+	Provider     *string                 `json:"provider,omitempty"`
+	Model        *string                 `json:"model,omitempty"`
+	VectorDim    *int                    `json:"vector_dim,omitempty"`
+	Ollama       *fileOllamaConfig       `json:"ollama,omitempty"`
+	OpenAI       *fileOpenAIConfig       `json:"openai,omitempty"`
+	Image        *fileImageConfig        `json:"image,omitempty"`
+	TagExtractor *fileTagExtractorConfig `json:"tag_extractor,omitempty"`
 }
 
 type fileOllamaConfig struct {
@@ -92,6 +116,18 @@ type fileImageConfig struct {
 	Device      *string `json:"device,omitempty"`
 	Python      *string `json:"python,omitempty"`
 	VisionModel *string `json:"vision_model,omitempty"`
+}
+
+type fileTagExtractorConfig struct {
+	Enabled       *bool             `json:"enabled,omitempty"`
+	Provider      *string           `json:"provider,omitempty"`
+	Model         *string           `json:"model,omitempty"`
+	MaxTags       *int              `json:"max_tags,omitempty"`
+	MinTagLen     *int              `json:"min_tag_len,omitempty"`
+	MaxTagLen     *int              `json:"max_tag_len,omitempty"`
+	SkipIfHasYAML *bool             `json:"skip_if_has_yaml,omitempty"`
+	Timeout       *string           `json:"timeout,omitempty"`
+	Options       map[string]string `json:"options,omitempty"`
 }
 
 func Load() (RuntimeConfig, error) {
@@ -184,6 +220,10 @@ func (c PersistedConfig) Settings() (Settings, error) {
 		}
 		openAITimeout = parsed
 	}
+	tagExtractorSettings, err := c.TagExtractor.settings(defaults.TagExtractor)
+	if err != nil {
+		return Settings{}, err
+	}
 
 	dataDir, err := resolveConfiguredDataDir(c.DataDir)
 	if err != nil {
@@ -229,6 +269,9 @@ func (c PersistedConfig) Settings() (Settings, error) {
 		openAISettings.InputType = strings.TrimSpace(c.OpenAI.InputType)
 	}
 	openAISettings.Timeout = openAITimeout
+	if tagExtractorSettings.Options == nil {
+		tagExtractorSettings.Options = map[string]string{}
+	}
 
 	settings := Settings{
 		DataDir:   dataDir,
@@ -240,8 +283,9 @@ func (c PersistedConfig) Settings() (Settings, error) {
 			BatchSize: c.Ollama.BatchSize,
 			Timeout:   timeout,
 		},
-		OpenAI: openAISettings,
-		Image:  imageSettings,
+		OpenAI:       openAISettings,
+		Image:        imageSettings,
+		TagExtractor: tagExtractorSettings,
 	}
 	applyProviderDefaults(&settings)
 
@@ -350,6 +394,39 @@ func mergeFileConfig(base Settings, patch fileConfig) (Settings, error) {
 			resolved.Image.VisionModel = strings.TrimSpace(*patch.Image.VisionModel)
 		}
 	}
+	if patch.TagExtractor != nil {
+		if patch.TagExtractor.Enabled != nil {
+			resolved.TagExtractor.Enabled = *patch.TagExtractor.Enabled
+		}
+		if patch.TagExtractor.Provider != nil {
+			resolved.TagExtractor.Provider = strings.TrimSpace(*patch.TagExtractor.Provider)
+		}
+		if patch.TagExtractor.Model != nil {
+			resolved.TagExtractor.Model = strings.TrimSpace(*patch.TagExtractor.Model)
+		}
+		if patch.TagExtractor.MaxTags != nil {
+			resolved.TagExtractor.MaxTags = *patch.TagExtractor.MaxTags
+		}
+		if patch.TagExtractor.MinTagLen != nil {
+			resolved.TagExtractor.MinTagLen = *patch.TagExtractor.MinTagLen
+		}
+		if patch.TagExtractor.MaxTagLen != nil {
+			resolved.TagExtractor.MaxTagLen = *patch.TagExtractor.MaxTagLen
+		}
+		if patch.TagExtractor.SkipIfHasYAML != nil {
+			resolved.TagExtractor.SkipIfHasYAML = *patch.TagExtractor.SkipIfHasYAML
+		}
+		if patch.TagExtractor.Timeout != nil {
+			timeout, err := time.ParseDuration(strings.TrimSpace(*patch.TagExtractor.Timeout))
+			if err != nil {
+				return Settings{}, fmt.Errorf("%w: tag_extractor.timeout must be a valid duration: %v", ErrInvalidConfig, err)
+			}
+			resolved.TagExtractor.Timeout = timeout
+		}
+		if patch.TagExtractor.Options != nil {
+			resolved.TagExtractor.Options = cloneStringMap(patch.TagExtractor.Options)
+		}
+	}
 	applyProviderDefaults(&resolved)
 
 	if err := validateSettings(resolved); err != nil {
@@ -451,6 +528,23 @@ func validateSettings(settings Settings) error {
 	if strings.TrimSpace(settings.Image.VisionModel) == "" {
 		return fmt.Errorf("%w: image.vision_model is required", ErrInvalidConfig)
 	}
+	if settings.TagExtractor.Enabled {
+		if strings.TrimSpace(settings.TagExtractor.Provider) == "" {
+			return fmt.Errorf("%w: tag_extractor.provider is required when enabled", ErrInvalidConfig)
+		}
+		if strings.TrimSpace(settings.TagExtractor.Model) == "" {
+			return fmt.Errorf("%w: tag_extractor.model is required when enabled", ErrInvalidConfig)
+		}
+	}
+	if settings.TagExtractor.MaxTags < 1 {
+		return fmt.Errorf("%w: tag_extractor.max_tags must be >= 1", ErrInvalidConfig)
+	}
+	if settings.TagExtractor.MinTagLen > settings.TagExtractor.MaxTagLen {
+		return fmt.Errorf("%w: tag_extractor.min_tag_len must be <= tag_extractor.max_tag_len", ErrInvalidConfig)
+	}
+	if settings.TagExtractor.Timeout <= 0 {
+		return fmt.Errorf("%w: tag_extractor.timeout must be > 0", ErrInvalidConfig)
+	}
 	return nil
 }
 
@@ -482,7 +576,175 @@ func persistedFromSettings(settings Settings) PersistedConfig {
 			Python:      settings.Image.Python,
 			VisionModel: settings.Image.VisionModel,
 		},
+		TagExtractor: PersistedTagExtractorConfig{
+			Enabled:       settings.TagExtractor.Enabled,
+			Provider:      settings.TagExtractor.Provider,
+			Model:         settings.TagExtractor.Model,
+			MaxTags:       settings.TagExtractor.MaxTags,
+			MinTagLen:     settings.TagExtractor.MinTagLen,
+			MaxTagLen:     settings.TagExtractor.MaxTagLen,
+			SkipIfHasYAML: settings.TagExtractor.SkipIfHasYAML,
+			Timeout:       settings.TagExtractor.Timeout.String(),
+			Options:       cloneStringMap(settings.TagExtractor.Options),
+		},
 	}
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func (cfg *PersistedTagExtractorConfig) UnmarshalJSON(data []byte) error {
+	type persistedTagExtractorJSON struct {
+		Enabled       *bool              `json:"enabled"`
+		Provider      *string            `json:"provider"`
+		Model         *string            `json:"model"`
+		MaxTags       *int               `json:"max_tags"`
+		MinTagLen     *int               `json:"min_tag_len"`
+		MaxTagLen     *int               `json:"max_tag_len"`
+		SkipIfHasYAML *bool              `json:"skip_if_has_yaml"`
+		Timeout       *string            `json:"timeout"`
+		Options       *map[string]string `json:"options,omitempty"`
+	}
+
+	var decoded persistedTagExtractorJSON
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+
+	*cfg = PersistedTagExtractorConfig{present: true}
+	if decoded.Enabled != nil {
+		cfg.Enabled = *decoded.Enabled
+		cfg.enabledSet = true
+	}
+	if decoded.Provider != nil {
+		cfg.Provider = *decoded.Provider
+		cfg.providerSet = true
+	}
+	if decoded.Model != nil {
+		cfg.Model = *decoded.Model
+		cfg.modelSet = true
+	}
+	if decoded.MaxTags != nil {
+		cfg.MaxTags = *decoded.MaxTags
+		cfg.maxTagsSet = true
+	}
+	if decoded.MinTagLen != nil {
+		cfg.MinTagLen = *decoded.MinTagLen
+		cfg.minTagLenSet = true
+	}
+	if decoded.MaxTagLen != nil {
+		cfg.MaxTagLen = *decoded.MaxTagLen
+		cfg.maxTagLenSet = true
+	}
+	if decoded.SkipIfHasYAML != nil {
+		cfg.SkipIfHasYAML = *decoded.SkipIfHasYAML
+		cfg.skipIfHasYAMLSet = true
+	}
+	if decoded.Timeout != nil {
+		cfg.Timeout = *decoded.Timeout
+		cfg.timeoutSet = true
+	}
+	if decoded.Options != nil {
+		cfg.Options = cloneStringMap(*decoded.Options)
+		cfg.optionsSet = true
+	}
+	return nil
+}
+
+func (cfg PersistedTagExtractorConfig) settings(defaults TagExtractorConfig) (TagExtractorConfig, error) {
+	settings := defaults
+	if cfg.hasSetFlags() {
+		if cfg.enabledSet {
+			settings.Enabled = cfg.Enabled
+		}
+		if cfg.providerSet {
+			settings.Provider = strings.TrimSpace(cfg.Provider)
+		}
+		if cfg.modelSet {
+			settings.Model = strings.TrimSpace(cfg.Model)
+		}
+		if cfg.maxTagsSet {
+			settings.MaxTags = cfg.MaxTags
+		}
+		if cfg.minTagLenSet {
+			settings.MinTagLen = cfg.MinTagLen
+		}
+		if cfg.maxTagLenSet {
+			settings.MaxTagLen = cfg.MaxTagLen
+		}
+		if cfg.skipIfHasYAMLSet {
+			settings.SkipIfHasYAML = cfg.SkipIfHasYAML
+		}
+		if cfg.timeoutSet {
+			if strings.TrimSpace(cfg.Timeout) == "" {
+				settings.Timeout = 0
+			} else {
+				parsed, err := time.ParseDuration(strings.TrimSpace(cfg.Timeout))
+				if err != nil {
+					return TagExtractorConfig{}, fmt.Errorf("%w: tag_extractor.timeout must be a valid duration: %v", ErrInvalidConfig, err)
+				}
+				settings.Timeout = parsed
+			}
+		}
+		if cfg.optionsSet {
+			settings.Options = cloneStringMap(cfg.Options)
+		}
+		if settings.Options == nil {
+			settings.Options = map[string]string{}
+		}
+		return settings, nil
+	}
+
+	if isZeroPersistedTagExtractorConfig(cfg) {
+		if settings.Options == nil {
+			settings.Options = map[string]string{}
+		}
+		return settings, nil
+	}
+
+	settings.Enabled = cfg.Enabled
+	settings.Provider = strings.TrimSpace(cfg.Provider)
+	settings.Model = strings.TrimSpace(cfg.Model)
+	settings.MaxTags = cfg.MaxTags
+	settings.MinTagLen = cfg.MinTagLen
+	settings.MaxTagLen = cfg.MaxTagLen
+	settings.SkipIfHasYAML = cfg.SkipIfHasYAML
+	if strings.TrimSpace(cfg.Timeout) != "" {
+		parsed, err := time.ParseDuration(strings.TrimSpace(cfg.Timeout))
+		if err != nil {
+			return TagExtractorConfig{}, fmt.Errorf("%w: tag_extractor.timeout must be a valid duration: %v", ErrInvalidConfig, err)
+		}
+		settings.Timeout = parsed
+	}
+	settings.Options = cloneStringMap(cfg.Options)
+	if settings.Options == nil {
+		settings.Options = map[string]string{}
+	}
+	return settings, nil
+}
+
+func (cfg PersistedTagExtractorConfig) hasSetFlags() bool {
+	return cfg.present || cfg.enabledSet || cfg.providerSet || cfg.modelSet || cfg.maxTagsSet || cfg.minTagLenSet || cfg.maxTagLenSet || cfg.skipIfHasYAMLSet || cfg.timeoutSet || cfg.optionsSet
+}
+
+func isZeroPersistedTagExtractorConfig(cfg PersistedTagExtractorConfig) bool {
+	return !cfg.Enabled &&
+		strings.TrimSpace(cfg.Provider) == "" &&
+		strings.TrimSpace(cfg.Model) == "" &&
+		cfg.MaxTags == 0 &&
+		cfg.MinTagLen == 0 &&
+		cfg.MaxTagLen == 0 &&
+		!cfg.SkipIfHasYAML &&
+		strings.TrimSpace(cfg.Timeout) == "" &&
+		len(cfg.Options) == 0
 }
 
 func resolveConfiguredDataDir(value string) (string, error) {

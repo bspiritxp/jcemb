@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bspiritxp/jcemb/internal/domain"
 	jcpaths "github.com/bspiritxp/jcemb/internal/paths"
 )
 
@@ -18,26 +19,29 @@ const (
 	OpenAIDefaultModel  = "text-embedding-3-small"
 	OpenAIDefaultDim    = 1536
 
-	envDataDir          = "JCEMB_DATA_DIR"
-	envProvider         = "JCEMB_PROVIDER"
-	envModel            = "JCEMB_MODEL"
-	envVectorDim        = "JCEMB_VECTOR_DIM"
-	envOllamaBatchSize  = "JCEMB_OLLAMA_BATCH_SIZE"
-	envOllamaTimeout    = "JCEMB_OLLAMA_TIMEOUT"
-	envOllamaURL        = "OLLAMA_HOST"
-	envImageProvider    = "JCEMB_IMAGE_PROVIDER"
-	envImageModel       = "JCEMB_IMAGE_MODEL"
-	envImagePretrained  = "JCEMB_IMAGE_PRETRAINED"
-	envImageDimensions  = "JCEMB_IMAGE_DIMENSIONS"
-	envImageDevice      = "JCEMB_IMAGE_DEVICE"
-	envImagePython      = "JCEMB_IMAGE_PYTHON"
-	envImageVision      = "JCEMB_IMAGE_VISION_MODEL"
-	envOpenAIBaseURL    = "OPENAI_BASE_URL"
-	envOpenAIAPIKey     = "OPENAI_API_KEY"
-	envOpenAITimeout    = "JCEMB_OPENAI_TIMEOUT"
-	envOpenAIBatchSize  = "JCEMB_OPENAI_BATCH_SIZE"
-	envOpenAIDimensions = "JCEMB_OPENAI_DIMENSIONS"
-	envOpenAIInputType  = "JCEMB_OPENAI_INPUT_TYPE"
+	envDataDir              = "JCEMB_DATA_DIR"
+	envProvider             = "JCEMB_PROVIDER"
+	envModel                = "JCEMB_MODEL"
+	envVectorDim            = "JCEMB_VECTOR_DIM"
+	envOllamaBatchSize      = "JCEMB_OLLAMA_BATCH_SIZE"
+	envOllamaTimeout        = "JCEMB_OLLAMA_TIMEOUT"
+	envOllamaURL            = "OLLAMA_HOST"
+	envImageProvider        = "JCEMB_IMAGE_PROVIDER"
+	envImageModel           = "JCEMB_IMAGE_MODEL"
+	envImagePretrained      = "JCEMB_IMAGE_PRETRAINED"
+	envImageDimensions      = "JCEMB_IMAGE_DIMENSIONS"
+	envImageDevice          = "JCEMB_IMAGE_DEVICE"
+	envImagePython          = "JCEMB_IMAGE_PYTHON"
+	envImageVision          = "JCEMB_IMAGE_VISION_MODEL"
+	envOpenAIBaseURL        = "OPENAI_BASE_URL"
+	envOpenAIAPIKey         = "OPENAI_API_KEY"
+	envOpenAITimeout        = "JCEMB_OPENAI_TIMEOUT"
+	envOpenAIBatchSize      = "JCEMB_OPENAI_BATCH_SIZE"
+	envOpenAIDimensions     = "JCEMB_OPENAI_DIMENSIONS"
+	envOpenAIInputType      = "JCEMB_OPENAI_INPUT_TYPE"
+	envTagExtractorProvider = "JCEMB_TAG_EXTRACTOR_PROVIDER"
+	envTagExtractorModel    = "JCEMB_TAG_EXTRACTOR_MODEL"
+	envTagExtractorEnabled  = "JCEMB_TAG_EXTRACTOR_ENABLED"
 )
 
 type DefaultsConfig struct {
@@ -52,13 +56,14 @@ type DefaultsConfig struct {
 }
 
 type Settings struct {
-	DataDir   string
-	Provider  string
-	Model     string
-	VectorDim int
-	Ollama    OllamaConfig
-	OpenAI    OpenAIConfig
-	Image     ImageConfig
+	DataDir      string
+	Provider     string
+	Model        string
+	VectorDim    int
+	Ollama       OllamaConfig
+	OpenAI       OpenAIConfig
+	Image        ImageConfig
+	TagExtractor TagExtractorConfig
 }
 
 type OllamaConfig struct {
@@ -90,6 +95,18 @@ type ImageConfig struct {
 	Device      string
 	Python      string
 	VisionModel string
+}
+
+type TagExtractorConfig struct {
+	Enabled       bool
+	Provider      string
+	Model         string
+	MaxTags       int
+	MinTagLen     int
+	MaxTagLen     int
+	SkipIfHasYAML bool
+	Timeout       time.Duration
+	Options       map[string]string
 }
 
 func Defaults() DefaultsConfig {
@@ -176,6 +193,17 @@ func builtInSettings(dataRoot string) Settings {
 			Python:      "python3",
 			VisionModel: "llava",
 		},
+		TagExtractor: TagExtractorConfig{
+			Enabled:       true,
+			Provider:      DefaultProviderName,
+			Model:         "qwen2.5:7b",
+			MaxTags:       domain.DefaultTagExtractorMaxTags,
+			MinTagLen:     domain.DefaultTagExtractorMinTagLen,
+			MaxTagLen:     domain.DefaultTagExtractorMaxTagLen,
+			SkipIfHasYAML: true,
+			Timeout:       domain.DefaultTagExtractorTimeout,
+			Options:       map[string]string{},
+		},
 	}
 }
 
@@ -255,6 +283,17 @@ func applyEnvOverrides(base Settings) Settings {
 	}
 	if value := strings.TrimSpace(os.Getenv(envOpenAIInputType)); value != "" {
 		resolved.OpenAI.InputType = value
+	}
+	if value := strings.TrimSpace(os.Getenv(envTagExtractorProvider)); value != "" {
+		resolved.TagExtractor.Provider = value
+	}
+	if value := strings.TrimSpace(os.Getenv(envTagExtractorModel)); value != "" {
+		resolved.TagExtractor.Model = value
+	}
+	if value := strings.TrimSpace(os.Getenv(envTagExtractorEnabled)); value != "" {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			resolved.TagExtractor.Enabled = parsed
+		}
 	}
 	applyProviderDefaults(&resolved)
 
