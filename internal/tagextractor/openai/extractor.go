@@ -58,21 +58,19 @@ func (e *Extractor) Extract(ctx context.Context, request domain.TagExtractReques
 		}},
 		"text": map[string]any{
 			"format": map[string]any{
-				"type": "json_schema",
-				"json_schema": map[string]any{
-					"name":   "tags",
-					"strict": true,
-					"schema": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"tags": map[string]any{
-								"type":  "array",
-								"items": map[string]any{"type": "string"},
-							},
+				"type":   "json_schema",
+				"name":   "tags",
+				"strict": true,
+				"schema": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"tags": map[string]any{
+							"type":  "array",
+							"items": map[string]any{"type": "string"},
 						},
-						"required":             []string{"tags"},
-						"additionalProperties": false,
 					},
+					"required":             []string{"tags"},
+					"additionalProperties": false,
 				},
 			},
 		},

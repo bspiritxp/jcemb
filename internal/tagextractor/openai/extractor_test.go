@@ -32,12 +32,12 @@ func TestExtractSuccessAndRegistryRegistration(t *testing.T) {
 		require.NoError(t, json.Unmarshal(body, &payload))
 		require.Equal(t, "gpt-test", payload["model"])
 
-		textBlock := payload["text"].(map[string]any)["format"].(map[string]any)
-		require.Equal(t, "json_schema", textBlock["type"])
-		jsonSchema := textBlock["json_schema"].(map[string]any)
-		require.Equal(t, "tags", jsonSchema["name"])
-		require.Equal(t, true, jsonSchema["strict"])
-		schema := jsonSchema["schema"].(map[string]any)
+		format := payload["text"].(map[string]any)["format"].(map[string]any)
+		require.Equal(t, "json_schema", format["type"])
+		require.Equal(t, "tags", format["name"])
+		require.Equal(t, true, format["strict"])
+		require.NotContains(t, format, "json_schema", "schema fields must be flat under text.format, not nested in json_schema")
+		schema := format["schema"].(map[string]any)
 		require.Equal(t, false, schema["additionalProperties"])
 
 		input := payload["input"].([]any)
