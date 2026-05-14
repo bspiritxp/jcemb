@@ -2,6 +2,7 @@ package lancedb
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -48,6 +49,83 @@ func TestStoreUpsertSearchRoundTrip(t *testing.T) {
 	require.Equal(t, "chunk-1", results[0].Chunk.ID)
 	require.Equal(t, 1, results[0].Rank)
 	require.InDelta(t, 1.0, results[0].Score, 1e-6)
+}
+
+func TestStorePersistsTagVectorAndSemanticTags(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	store := newTestStore(t, rootDir, 3)
+	record := newVectorRecord("chunk-1", "docs/a.md", 0, []string{"go", "guide"}, []float32{1, 0, 0})
+	record.TagVector = []float32{0.2, 0.3, 0.4}
+	record.SemanticTags = []string{"golang", "tutorial"}
+
+	require.NoError(t, store.Upsert(context.Background(), []domain.VectorRecord{record}))
+	require.NoError(t, store.Close())
+
+	persisted, err := readPersistedStore(filepath.Join(rootDir, ".vectordb", storageFileName))
+	require.NoError(t, err)
+	require.Len(t, persisted.Records, 1)
+	require.Equal(t, record.TagVector, persisted.Records[0].TagVector)
+	require.Equal(t, record.SemanticTags, persisted.Records[0].SemanticTags)
+
+	reopened := newTestStore(t, rootDir, 3)
+	loaded, err := reopened.FindBySource(context.Background(), "docs/a.md")
+	require.NoError(t, err)
+	require.Len(t, loaded, 1)
+	require.Equal(t, record.TagVector, loaded[0].TagVector)
+	require.Equal(t, record.SemanticTags, loaded[0].SemanticTags)
+
+	loaded[0].TagVector[0] = 99
+	loaded[0].SemanticTags[0] = "changed"
+
+	again, err := reopened.FindBySource(context.Background(), "docs/a.md")
+	require.NoError(t, err)
+	require.Len(t, again, 1)
+	require.Equal(t, record.TagVector, again[0].TagVector)
+	require.Equal(t, record.SemanticTags, again[0].SemanticTags)
+}
+
+func TestStoreLoadsV2PayloadWithoutTagFields(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	storageDir := filepath.Join(rootDir, ".vectordb")
+	require.NoError(t, os.MkdirAll(storageDir, 0o755))
+
+	legacyRecord := newVectorRecord("chunk-1", "docs/a.md", 0, []string{"go"}, []float32{1, 0, 0})
+	payload, err := json.Marshal(persistedStore{
+		Version: storageFormatV2,
+		Collection: persistedCollection{
+			Provider:  "ollama",
+			Model:     "bge-m3",
+			Splitter:  "markdown",
+			VectorDim: 3,
+			DBVersion: DBVersion,
+			CreatedAt: time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC),
+		},
+		Records: []persistedVectorRecord{{
+			Chunk:  legacyRecord.Chunk,
+			Vector: legacyRecord.Vector,
+		}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(storageDir, storageFileName), payload, 0o644))
+
+	reopened := newTestStore(t, rootDir, 3)
+	loaded, err := reopened.FindBySource(context.Background(), "docs/a.md")
+	require.NoError(t, err)
+	require.Len(t, loaded, 1)
+	require.Nil(t, loaded[0].TagVector)
+	require.Nil(t, loaded[0].SemanticTags)
+
+	results, err := reopened.Search(context.Background(), domain.SearchQuery{
+		Vector: []float32{1, 0, 0},
+		Limit:  10,
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Zero(t, results[0].TagScore)
 }
 
 func TestStoreSearchNormalizesWindowsStylePathPrefix(t *testing.T) {
@@ -262,6 +340,169 @@ func TestStoreSearchHonorsMinScore(t *testing.T) {
 	}
 }
 
+func TestStoreSearchUsesContentOnlyWhenFusionDisabled(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, t.TempDir(), 3)
+	record := newVectorRecord("chunk-1", "docs/a.md", 0, []string{"go"}, []float32{1, 0, 0})
+	record.TagVector = []float32{0, 1, 0}
+	require.NoError(t, store.Upsert(context.Background(), []domain.VectorRecord{record}))
+
+	results, err := store.Search(context.Background(), domain.SearchQuery{
+		Vector:       []float32{1, 0, 0},
+		TagVector:    []float32{1, 0, 0},
+		Limit:        10,
+		TagWeight:    0.75,
+		UseTagFusion: false,
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.InDelta(t, 1.0, results[0].Score, 1e-6)
+	require.Zero(t, results[0].TagScore)
+}
+
+func TestStoreSearchFallsBackWhenRecordTagVectorMissing(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, t.TempDir(), 3)
+	require.NoError(t, store.Upsert(context.Background(), []domain.VectorRecord{
+		newVectorRecord("chunk-1", "docs/a.md", 0, []string{"go"}, []float32{1, 0, 0}),
+	}))
+
+	results, err := store.Search(context.Background(), domain.SearchQuery{
+		Vector:       []float32{1, 0, 0},
+		TagVector:    []float32{0, 1, 0},
+		Limit:        10,
+		TagWeight:    0.75,
+		UseTagFusion: true,
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.InDelta(t, 1.0, results[0].Score, 1e-6)
+	require.Zero(t, results[0].TagScore)
+}
+
+func TestStoreSearchFallsBackWhenQueryTagVectorMissing(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, t.TempDir(), 3)
+	record := newVectorRecord("chunk-1", "docs/a.md", 0, []string{"go"}, []float32{1, 0, 0})
+	record.TagVector = []float32{0, 1, 0}
+	require.NoError(t, store.Upsert(context.Background(), []domain.VectorRecord{record}))
+
+	results, err := store.Search(context.Background(), domain.SearchQuery{
+		Vector:       []float32{1, 0, 0},
+		Limit:        10,
+		TagWeight:    0.75,
+		UseTagFusion: true,
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.InDelta(t, 1.0, results[0].Score, 1e-6)
+	require.Zero(t, results[0].TagScore)
+}
+
+func TestStoreSearchFusesContentAndTagScoresWhenBothPresent(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, t.TempDir(), 3)
+	record := newVectorRecord("chunk-1", "docs/a.md", 0, []string{"go"}, []float32{1, 0, 0})
+	record.TagVector = []float32{0, 1, 0}
+	require.NoError(t, store.Upsert(context.Background(), []domain.VectorRecord{record}))
+
+	results, err := store.Search(context.Background(), domain.SearchQuery{
+		Vector:       []float32{1, 0, 0},
+		TagVector:    []float32{1, 0, 0},
+		Limit:        10,
+		TagWeight:    0.25,
+		UseTagFusion: true,
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.InDelta(t, 0.0, results[0].TagScore, 1e-6)
+	require.InDelta(t, 0.75, results[0].Score, 1e-6)
+}
+
+func TestStoreSearchAppliesHardFiltersBeforeFusionScoring(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, t.TempDir(), 3)
+	included := newVectorRecord("chunk-1", "docs/a.md", 0, []string{"go", "guide"}, []float32{1, 0, 0})
+	included.TagVector = []float32{0, 1, 0}
+	excluded := newVectorRecord("chunk-2", "notes/b.md", 0, []string{"ops"}, []float32{0, 1, 0})
+	excluded.TagVector = []float32{1, 0}
+	require.NoError(t, store.Upsert(context.Background(), []domain.VectorRecord{included, excluded}))
+
+	results, err := store.Search(context.Background(), domain.SearchQuery{
+		Vector:       []float32{1, 0, 0},
+		TagVector:    []float32{0, 1, 0},
+		Limit:        10,
+		Tags:         []string{"go", "guide"},
+		PathPrefix:   "docs",
+		TagWeight:    0.5,
+		UseTagFusion: true,
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "chunk-1", results[0].Chunk.ID)
+	require.InDelta(t, 1.0, results[0].TagScore, 1e-6)
+	require.InDelta(t, 1.0, results[0].Score, 1e-6)
+}
+
+func TestStoreSearchTagWeightZeroKeepsContentOnlyScoreWhilePopulatingTagScore(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, t.TempDir(), 3)
+	record := newVectorRecord("chunk-1", "docs/a.md", 0, []string{"go"}, []float32{1, 0, 0})
+	record.TagVector = []float32{0, 1, 0}
+	require.NoError(t, store.Upsert(context.Background(), []domain.VectorRecord{record}))
+
+	results, err := store.Search(context.Background(), domain.SearchQuery{
+		Vector:       []float32{1, 0, 0},
+		TagVector:    []float32{0, 1, 0},
+		Limit:        10,
+		TagWeight:    0,
+		UseTagFusion: true,
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.InDelta(t, 1.0, results[0].Score, 1e-6)
+	require.InDelta(t, 1.0, results[0].TagScore, 1e-6)
+}
+
+func TestStoreSearchTagWeightIsMonotonic(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, t.TempDir(), 3)
+	record := newVectorRecord("chunk-1", "docs/a.md", 0, []string{"go"}, []float32{1, 0, 0})
+	record.TagVector = []float32{0, 1, 0}
+	require.NoError(t, store.Upsert(context.Background(), []domain.VectorRecord{record}))
+
+	query := domain.SearchQuery{
+		Vector:       []float32{1, 0, 0},
+		TagVector:    []float32{1, 0, 0},
+		Limit:        10,
+		UseTagFusion: true,
+	}
+
+	alpha0, err := store.Search(context.Background(), withTagWeight(query, 0))
+	require.NoError(t, err)
+	alphaHalf, err := store.Search(context.Background(), withTagWeight(query, 0.5))
+	require.NoError(t, err)
+	alpha1, err := store.Search(context.Background(), withTagWeight(query, 1))
+	require.NoError(t, err)
+
+	require.Len(t, alpha0, 1)
+	require.Len(t, alphaHalf, 1)
+	require.Len(t, alpha1, 1)
+	require.Greater(t, alpha0[0].Score, alphaHalf[0].Score)
+	require.Greater(t, alphaHalf[0].Score, alpha1[0].Score)
+	require.InDelta(t, 1.0, alpha0[0].Score, 1e-6)
+	require.InDelta(t, 0.5, alphaHalf[0].Score, 1e-6)
+	require.InDelta(t, 0.0, alpha1[0].Score, 1e-6)
+	require.InDelta(t, 0.0, alpha1[0].TagScore, 1e-6)
+}
+
 func TestStoreSearchReturnsClearErrorWhenVectorDBMissing(t *testing.T) {
 	t.Parallel()
 
@@ -368,4 +609,9 @@ func newVectorRecord(chunkID string, relPath string, chunkIndex int, tags []stri
 	}
 
 	return domain.VectorRecord{Chunk: chunk, Vector: vector}
+}
+
+func withTagWeight(query domain.SearchQuery, weight float64) domain.SearchQuery {
+	query.TagWeight = weight
+	return query
 }

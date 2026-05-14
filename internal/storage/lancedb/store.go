@@ -80,8 +80,10 @@ type persistedFileState struct {
 }
 
 type persistedVectorRecord struct {
-	Chunk  domain.Chunk `json:"chunk"`
-	Vector []float32    `json:"vector"`
+	Chunk        domain.Chunk `json:"chunk"`
+	Vector       []float32    `json:"vector"`
+	TagVector    []float32    `json:"tag_vector,omitempty"`
+	SemanticTags []string     `json:"semantic_tags,omitempty"`
 }
 
 func init() {
@@ -285,10 +287,14 @@ func (s *Store) Search(ctx context.Context, query domain.SearchQuery) ([]domain.
 			continue
 		}
 
+		contentScore := cosineSimilarity(query.Vector, record.Vector)
+		tagScore, finalScore := fusedSearchScores(query, record, contentScore)
+
 		results = append(results, domain.SearchResult{
-			Chunk:  cloneChunk(record.Chunk),
-			Score:  cosineSimilarity(query.Vector, record.Vector),
-			Vector: append([]float32(nil), record.Vector...),
+			Chunk:    cloneChunk(record.Chunk),
+			Score:    finalScore,
+			TagScore: tagScore,
+			Vector:   append([]float32(nil), record.Vector...),
 		})
 	}
 
@@ -383,8 +389,10 @@ func (s *Store) load() error {
 	loaded := make(map[string]domain.VectorRecord, len(persisted.Records))
 	for index, entry := range persisted.Records {
 		record := domain.VectorRecord{
-			Chunk:  cloneChunk(entry.Chunk),
-			Vector: append([]float32(nil), entry.Vector...),
+			Chunk:        cloneChunk(entry.Chunk),
+			Vector:       append([]float32(nil), entry.Vector...),
+			TagVector:    append([]float32(nil), entry.TagVector...),
+			SemanticTags: append([]string(nil), entry.SemanticTags...),
 		}
 		if err := s.validateRecord(record); err != nil {
 			return fmt.Errorf("lancedb: records[%d]: %w", index, err)
@@ -423,8 +431,10 @@ func (s *Store) persistLocked() error {
 	for _, id := range ids {
 		record := s.records[id]
 		records = append(records, persistedVectorRecord{
-			Chunk:  cloneChunk(record.Chunk),
-			Vector: append([]float32(nil), record.Vector...),
+			Chunk:        cloneChunk(record.Chunk),
+			Vector:       append([]float32(nil), record.Vector...),
+			TagVector:    append([]float32(nil), record.TagVector...),
+			SemanticTags: append([]string(nil), record.SemanticTags...),
 		})
 	}
 
@@ -750,6 +760,26 @@ func cosineSimilarity(left []float32, right []float32) float64 {
 	return dot / (math.Sqrt(leftNorm) * math.Sqrt(rightNorm))
 }
 
+func fusedSearchScores(query domain.SearchQuery, record domain.VectorRecord, contentScore float64) (tagScore float64, finalScore float64) {
+	if !canFuseTagScore(query, record) {
+		return 0, contentScore
+	}
+
+	tagScore = cosineSimilarity(query.TagVector, record.TagVector)
+	finalScore = ((1 - query.TagWeight) * contentScore) + (query.TagWeight * tagScore)
+	return tagScore, finalScore
+}
+
+func canFuseTagScore(query domain.SearchQuery, record domain.VectorRecord) bool {
+	if !query.UseTagFusion {
+		return false
+	}
+	if len(query.TagVector) == 0 || len(record.TagVector) == 0 {
+		return false
+	}
+	return len(query.TagVector) == len(record.TagVector)
+}
+
 func cloneConfig(config domain.StoreConfig) domain.StoreConfig {
 	cloned := config
 	cloned.Flags = cloneBoolMap(config.Flags)
@@ -787,8 +817,10 @@ func cloneBoolMap(values map[string]bool) map[string]bool {
 
 func cloneVectorRecord(record domain.VectorRecord) domain.VectorRecord {
 	return domain.VectorRecord{
-		Chunk:  cloneChunk(record.Chunk),
-		Vector: append([]float32(nil), record.Vector...),
+		Chunk:        cloneChunk(record.Chunk),
+		Vector:       append([]float32(nil), record.Vector...),
+		TagVector:    append([]float32(nil), record.TagVector...),
+		SemanticTags: append([]string(nil), record.SemanticTags...),
 	}
 }
 
