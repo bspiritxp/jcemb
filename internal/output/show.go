@@ -36,11 +36,13 @@ type ShowJSONCollection struct {
 }
 
 type ShowJSONChunk struct {
-	ChunkID   string   `json:"chunk_id"`
-	Tags      []string `json:"tags"`
-	VectorLen int      `json:"vector_len"`
-	Title     string   `json:"title"`
-	Content   string   `json:"content"`
+	ChunkID      string   `json:"chunk_id"`
+	Tags         []string `json:"tags"`
+	SemanticTags []string `json:"semantic_tags,omitempty"`
+	TagVectorLen int      `json:"tag_vector_len,omitempty"`
+	VectorLen    int      `json:"vector_len"`
+	Title        string   `json:"title"`
+	Content      string   `json:"content"`
 }
 
 func RenderShowText(writer io.Writer, result show.Result) error {
@@ -143,11 +145,13 @@ func RenderShowJSON(writer io.Writer, result show.Result) error {
 
 	for _, chunk := range result.Chunks {
 		envelope.Chunks = append(envelope.Chunks, ShowJSONChunk{
-			ChunkID:   chunk.ChunkID,
-			Tags:      append([]string(nil), chunk.Tags...),
-			VectorLen: chunk.VectorLen,
-			Title:     chunk.Title,
-			Content:   chunk.Content,
+			ChunkID:      chunk.ChunkID,
+			Tags:         append([]string(nil), chunk.Tags...),
+			SemanticTags: append([]string(nil), chunk.SemanticTags...),
+			TagVectorLen: chunk.TagVectorLen,
+			VectorLen:    chunk.VectorLen,
+			Title:        chunk.Title,
+			Content:      chunk.Content,
 		})
 	}
 

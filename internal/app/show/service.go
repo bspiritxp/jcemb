@@ -19,11 +19,13 @@ type Request struct {
 }
 
 type ChunkInfo struct {
-	ChunkID   string
-	Tags      []string
-	VectorLen int
-	Title     string
-	Content   string
+	ChunkID      string
+	Tags         []string
+	SemanticTags []string
+	TagVectorLen int
+	VectorLen    int
+	Title        string
+	Content      string
 }
 
 type FileInfo struct {
@@ -193,11 +195,13 @@ func (s *Service) checkCollection(ctx context.Context, dataDir string, entry ind
 	chunks := make([]ChunkInfo, 0, len(records))
 	for _, record := range records {
 		chunks = append(chunks, ChunkInfo{
-			ChunkID:   record.Chunk.ID,
-			Tags:      append([]string(nil), record.Chunk.Metadata.Tags...),
-			VectorLen: len(record.Vector),
-			Title:     record.Chunk.Metadata.Title,
-			Content:   record.Chunk.Content,
+			ChunkID:      record.Chunk.ID,
+			Tags:         append([]string(nil), record.Chunk.Metadata.Tags...),
+			SemanticTags: append([]string(nil), record.SemanticTags...),
+			TagVectorLen: len(record.TagVector),
+			VectorLen:    len(record.Vector),
+			Title:        record.Chunk.Metadata.Title,
+			Content:      record.Chunk.Content,
 		})
 	}
 

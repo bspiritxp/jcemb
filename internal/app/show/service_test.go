@@ -136,6 +136,8 @@ func TestShowReturnsFileInfoWhenFound(t *testing.T) {
 	require.Equal(t, "chunk-1", result.Chunks[0].ChunkID)
 	require.Equal(t, 1024, result.Chunks[0].VectorLen)
 	require.Equal(t, []string{"intro", "guide"}, result.Chunks[0].Tags)
+	require.Empty(t, result.Chunks[0].SemanticTags)
+	require.Zero(t, result.Chunks[0].TagVectorLen)
 	require.Equal(t, "Readme", result.Chunks[0].Title)
 }
 
