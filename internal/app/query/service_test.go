@@ -455,7 +455,7 @@ func TestServiceRunFallsBackToContentOnlyForShortQuery(t *testing.T) {
 	})
 
 	_, err := service.Run(context.Background(), Request{
-		Text:         "short",
+		Text:         "go",
 		Path:         rootDir,
 		TagWeight:    0.3,
 		MMRLambda:    1.0,
@@ -466,6 +466,50 @@ func TestServiceRunFallsBackToContentOnlyForShortQuery(t *testing.T) {
 	require.Len(t, store.searchQueries, 1)
 	require.False(t, store.searchQueries[0].UseTagFusion)
 	require.Nil(t, store.searchQueries[0].TagVector)
+}
+
+func TestServiceRunTriggersTagExtractionForShortChineseQuery(t *testing.T) {
+	t.Parallel()
+
+	dataRoot := t.TempDir()
+	rootDir := t.TempDir()
+	createdAt := time.Date(2026, 5, 14, 12, 15, 0, 0, time.UTC)
+	persistIndexedCollection(t, testStoreConfig(rootDir, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt), nil)
+	registerCollectionAt(t, dataRoot, rootDir)
+
+	extractor := &fakeTagExtractor{tags: []string{"加速"}}
+	store := &recordingVectorStore{}
+	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
+		GetProvider: func(name string) (registry.ProviderFactory, error) {
+			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
+				return &fakeProvider{vector: []float32{1, 0, 0}}, nil
+			}, nil
+		},
+		GetTagExtractor: func(name string) (domain.TagExtractorFactory, error) {
+			return func(config domain.TagExtractorConfig) (domain.TagExtractor, error) {
+				return extractor, nil
+			}, nil
+		},
+		GetVectorStore: func(name string) (registry.VectorStoreFactory, error) {
+			return func(config domain.StoreConfig) (domain.VectorStore, error) {
+				return store, nil
+			}, nil
+		},
+	})
+
+	_, err := service.Run(context.Background(), Request{
+		Text:         "如何加速",
+		Path:         rootDir,
+		TagWeight:    0.3,
+		MMRLambda:    1.0,
+		TagExtractor: domain.TagExtractorConfig{Provider: "ollama", Model: "qwen2.5:7b"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, extractor.calls)
+	require.Len(t, store.searchQueries, 1)
+	require.True(t, store.searchQueries[0].UseTagFusion)
+	require.NotNil(t, store.searchQueries[0].TagVector)
 }
 
 func TestServiceRunFallsBackToContentOnlyForImagePathQuery(t *testing.T) {

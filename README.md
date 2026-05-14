@@ -187,7 +187,7 @@ embed those tags, and fuse the tag score with the normal content score. Use
 Real fallback behavior:
 
 - `--tags` is a hard pre-filter and still runs before any score fusion.
-- Short text queries, fewer than 10 runes after trimming, use content-only ranking.
+- Short text queries, fewer than 4 runes after trimming, use content-only ranking.
 - Image queries, including `--file-type image` and image-path queries, use content-only ranking.
 - If semantic tag extraction returns no tags or fails, `jcemb` falls back to content-only ranking.
 - `--tag-weight 0` is equivalent to disabling tag fusion.

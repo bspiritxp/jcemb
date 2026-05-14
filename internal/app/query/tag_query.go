@@ -12,7 +12,9 @@ import (
 	"github.com/bspiritxp/jcemb/internal/scanprovider/image"
 )
 
-const minQueryTagRunes = 10
+// 4 runes covers a typical Chinese 2-word query (e.g. "如何加速") while still
+// skipping ultra-short English fragments where LLM-extracted tags are noisy.
+const minQueryTagRunes = 4
 
 type queryTagState struct {
 	tags         []string

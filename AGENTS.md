@@ -114,7 +114,7 @@ func init() {
 - **Reconcile**: deleted/renamed files are cleaned from both index and vector store on the next scan.
 - **Tag filter**: `--tags a,b` means **AND** semantics (result must contain both tags).
 - **Tag fusion**: semantic tags are embedded separately from chunk content. `query --tag-weight` controls score blending, `query --no-tag` forces content-only ranking, and `--tags` still filters before fusion.
-- **Fallbacks**: query-time tag extraction is skipped for image queries and short text queries under 10 runes, and any extraction failure falls back to content-only ranking.
+- **Fallbacks**: query-time tag extraction is skipped for image queries and short text queries under 4 runes, and any extraction failure falls back to content-only ranking.
 - **File type filter**: `query --file-type/-t` defaults to `markdown`; use `image` for text-to-image and image-to-image search.
 - **Path filter**: `query --path` accepts a file or directory and filters by the relative prefix; directory paths include descendants. Omit `--path` for global search across all indexed collections.
 - **Chunk ID stability**: derived from `rel_path + recipe_hash + chunk_index (+ section fingerprint)` so re-embeds are deterministic.

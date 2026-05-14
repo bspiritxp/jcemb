@@ -103,7 +103,7 @@ jcemb query "API docs" --path /path/to/docs
 
 **标签融合行为**:
 - `--tags` 仍是硬过滤，先过滤，再做融合排序
-- 文本 query 去空白后少于 10 个 rune 时，不做 query 标签提取，直接 content-only
+- 文本 query 去空白后少于 4 个 rune 时，不做 query 标签提取，直接 content-only
 - 图片 query，包括 `--file-type image` 和图片路径 query，不做 query 标签提取，直接 content-only
 - 语义标签提取失败，或没有提取到标签时，自动回退到 content-only
 - Markdown 文档的 YAML front matter 标签，与图片 caption 标签，继续用于硬过滤；语义标签是独立信号，只进入 `TagVector` 融合排序
