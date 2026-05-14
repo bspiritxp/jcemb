@@ -15,6 +15,7 @@ import (
 	"image/png"
 	"io"
 	"maps"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -26,6 +27,7 @@ import (
 	"time"
 
 	"github.com/bspiritxp/jcemb/internal/domain"
+	"github.com/bspiritxp/jcemb/internal/tagextractor"
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/tiff"
 	_ "golang.org/x/image/webp"
@@ -84,7 +86,7 @@ func (Provider) Extensions() []string {
 
 func (Provider) Recipe(config domain.ScanProviderConfig) domain.EmbedRecipe {
 	model := imageModelConfigFromOptions(config.ProviderOptions)
-	return domain.EmbedRecipe{
+	recipe := domain.EmbedRecipe{
 		Type:    FileType,
 		Version: Version,
 		Provider: domain.ProviderConfig{
@@ -111,6 +113,10 @@ func (Provider) Recipe(config domain.ScanProviderConfig) domain.EmbedRecipe {
 			"force":     config.Force,
 		},
 	}
+	if spec := recipeTagExtractorSpec(config.TagExtractor); spec != nil {
+		recipe.TagExtractor = spec
+	}
+	return recipe
 }
 
 func (p Provider) BuildRecords(ctx context.Context, request domain.ScanProviderRequest) (domain.ScanProviderResult, error) {
@@ -139,6 +145,12 @@ func (p Provider) BuildRecords(ctx context.Context, request domain.ScanProviderR
 	}
 	if len(vector) != model.Dimensions {
 		return domain.ScanProviderResult{}, fmt.Errorf("image: vector dimension mismatch: expected=%d actual=%d", model.Dimensions, len(vector))
+	}
+
+	semanticTags := semanticTagsFromCaption(caption.Tags, request.Recipe.TagExtractor)
+	tagVector, err := poolTagVector(ctx, p.vectorizer, model, semanticTags)
+	if err != nil {
+		return domain.ScanProviderResult{}, err
 	}
 
 	yaml := map[string]any{
@@ -197,7 +209,7 @@ func (p Provider) BuildRecords(ctx context.Context, request domain.ScanProviderR
 	}
 	return domain.ScanProviderResult{
 		State:   state,
-		Records: []domain.VectorRecord{{Chunk: chunk, Vector: vector}},
+		Records: []domain.VectorRecord{{Chunk: chunk, Vector: vector, TagVector: tagVector, SemanticTags: semanticTags}},
 	}, nil
 }
 
@@ -515,6 +527,72 @@ func captionText(caption Caption) string {
 	parts := []string{caption.Title, caption.Description}
 	parts = append(parts, caption.Tags...)
 	return strings.Join(parts, " ")
+}
+
+func semanticTagsFromCaption(tags []string, spec *domain.TagExtractorRecipeSpec) []string {
+	if spec == nil || len(tags) == 0 {
+		return nil
+	}
+
+	semanticTags := tagextractor.NormalizeSemanticTags(tags, domain.TagExtractorConfig{
+		MaxTags:       spec.MaxTags,
+		MinTagLen:     spec.MinTagLen,
+		MaxTagLen:     spec.MaxTagLen,
+		SkipIfHasYAML: spec.SkipIfHasYAML,
+	})
+	if len(semanticTags) == 0 {
+		return nil
+	}
+	return semanticTags
+}
+
+func poolTagVector(ctx context.Context, vectorizer ImageVectorizer, model ImageModelConfig, tags []string) ([]float32, error) {
+	if len(tags) == 0 {
+		return nil, nil
+	}
+
+	pooled := make([]float32, model.Dimensions)
+	for _, tag := range tags {
+		vector, err := vectorizer.EmbedText(ctx, model, tag)
+		if err != nil {
+			return nil, err
+		}
+		if len(vector) != model.Dimensions {
+			return nil, fmt.Errorf("image: tag vector dimension mismatch: expected=%d actual=%d", model.Dimensions, len(vector))
+		}
+		for i, value := range vector {
+			pooled[i] += value
+		}
+	}
+
+	scale := float32(len(tags))
+	var sumSquares float64
+	for i := range pooled {
+		pooled[i] /= scale
+		sumSquares += float64(pooled[i] * pooled[i])
+	}
+	if sumSquares == 0 {
+		return pooled, nil
+	}
+	normScale := float32(1 / math.Sqrt(sumSquares))
+	for i := range pooled {
+		pooled[i] *= normScale
+	}
+	return pooled, nil
+}
+
+func recipeTagExtractorSpec(config domain.TagExtractorConfig) *domain.TagExtractorRecipeSpec {
+	if config.Provider == "" || config.Model == "" {
+		return nil
+	}
+	return &domain.TagExtractorRecipeSpec{
+		Provider:      config.Provider,
+		Model:         config.Model,
+		MaxTags:       config.MaxTags,
+		MinTagLen:     config.MinTagLen,
+		MaxTagLen:     config.MaxTagLen,
+		SkipIfHasYAML: config.SkipIfHasYAML,
+	}
 }
 
 func ollamaCaptionImageContent(path string, content []byte) ([]byte, error) {

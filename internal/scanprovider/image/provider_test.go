@@ -101,6 +101,127 @@ func TestImageProviderOpenAIUsesCaptionTextForScanVector(t *testing.T) {
 	require.Contains(t, vectorizer.lastText, "pet")
 }
 
+func TestImageProviderBuildRecordsReusesCaptionTagsForSemanticTagVector(t *testing.T) {
+	root := t.TempDir()
+	imagePath := filepath.Join(root, "cat.png")
+	require.NoError(t, os.WriteFile(imagePath, []byte("fake image"), 0o644))
+
+	vectorizer := &poolingVectorizer{
+		imageVector: []float32{9, 9, 9},
+		textVectors: map[string][]float32{
+			"cat": []float32{1, 2, 3},
+			"pet": []float32{3, 2, 1},
+		},
+	}
+	provider := NewWithClients(vectorizer, fakeCaptioner{})
+	config := domain.ScanProviderConfig{FileType: FileType, DataDir: t.TempDir(), ProviderOptions: map[string]string{"image_dimensions": "3"}}
+	recipe := provider.Recipe(config)
+	recipe.TagExtractor = &domain.TagExtractorRecipeSpec{MaxTags: 8, MinTagLen: 2, MaxTagLen: 32}
+	result, err := provider.BuildRecords(context.Background(), domain.ScanProviderRequest{
+		File: domain.SourceFile{
+			RootDir:  root,
+			FilePath: imagePath,
+			RelPath:  imagePath,
+			FileName: "cat.png",
+			DocType:  FileType,
+			ModTime:  time.Unix(1, 0).UTC(),
+		},
+		Config: config,
+		Recipe: recipe,
+		Now:    func() time.Time { return time.Unix(2, 0).UTC() },
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, []float32{9, 9, 9}, result.Records[0].Vector)
+	requireVectorApprox(t, result.Records[0].TagVector, []float32{0.57735026, 0.57735026, 0.57735026})
+	require.Equal(t, []string{"cat", "pet"}, result.Records[0].SemanticTags)
+	require.Equal(t, []string{"cat", "pet"}, result.Records[0].Chunk.Metadata.Tags)
+	require.Equal(t, 1, vectorizer.imageCalls)
+	require.Equal(t, []string{"cat", "pet"}, vectorizer.textInputs)
+}
+
+func TestImageProviderRecipeIncludesTagExtractorSpecWhenEnabled(t *testing.T) {
+	provider := Provider{}
+	recipe := provider.Recipe(domain.ScanProviderConfig{
+		ProviderOptions: map[string]string{"image_dimensions": "3"},
+		TagExtractor: domain.TagExtractorConfig{
+			Provider:      "openai",
+			Model:         "gpt-4.1-mini",
+			MaxTags:       6,
+			MinTagLen:     2,
+			MaxTagLen:     24,
+			SkipIfHasYAML: true,
+		},
+	})
+	require.NotNil(t, recipe.TagExtractor)
+	require.Equal(t, "openai", recipe.TagExtractor.Provider)
+	require.Equal(t, "gpt-4.1-mini", recipe.TagExtractor.Model)
+	require.Equal(t, 6, recipe.TagExtractor.MaxTags)
+}
+
+func TestImageProviderBuildRecordsLeavesSemanticTagFieldsNilWhenCaptionHasNoTags(t *testing.T) {
+	root := t.TempDir()
+	imagePath := filepath.Join(root, "cat.png")
+	require.NoError(t, os.WriteFile(imagePath, []byte("fake image"), 0o644))
+
+	vectorizer := &poolingVectorizer{imageVector: []float32{9, 9, 9}}
+	provider := NewWithClients(vectorizer, noTagsCaptioner{})
+	config := domain.ScanProviderConfig{FileType: FileType, DataDir: t.TempDir(), ProviderOptions: map[string]string{"image_dimensions": "3"}}
+	recipe := provider.Recipe(config)
+	recipe.TagExtractor = &domain.TagExtractorRecipeSpec{MaxTags: 8, MinTagLen: 2, MaxTagLen: 32}
+	result, err := provider.BuildRecords(context.Background(), domain.ScanProviderRequest{
+		File: domain.SourceFile{
+			RootDir:  root,
+			FilePath: imagePath,
+			RelPath:  imagePath,
+			FileName: "cat.png",
+			DocType:  FileType,
+			ModTime:  time.Unix(1, 0).UTC(),
+		},
+		Config: config,
+		Recipe: recipe,
+		Now:    func() time.Time { return time.Unix(2, 0).UTC() },
+	})
+
+	require.NoError(t, err)
+	require.Nil(t, result.Records[0].TagVector)
+	require.Nil(t, result.Records[0].SemanticTags)
+	require.Empty(t, result.Records[0].Chunk.Metadata.Tags)
+	require.Equal(t, 1, vectorizer.imageCalls)
+	require.Empty(t, vectorizer.textInputs)
+}
+
+func TestImageProviderBuildRecordsLeavesSemanticTagFieldsNilWhenFeatureDisabled(t *testing.T) {
+	root := t.TempDir()
+	imagePath := filepath.Join(root, "cat.png")
+	require.NoError(t, os.WriteFile(imagePath, []byte("fake image"), 0o644))
+
+	vectorizer := &poolingVectorizer{imageVector: []float32{9, 9, 9}}
+	provider := NewWithClients(vectorizer, fakeCaptioner{})
+	config := domain.ScanProviderConfig{FileType: FileType, DataDir: t.TempDir(), ProviderOptions: map[string]string{"image_dimensions": "3"}}
+	recipe := provider.Recipe(config)
+	result, err := provider.BuildRecords(context.Background(), domain.ScanProviderRequest{
+		File: domain.SourceFile{
+			RootDir:  root,
+			FilePath: imagePath,
+			RelPath:  imagePath,
+			FileName: "cat.png",
+			DocType:  FileType,
+			ModTime:  time.Unix(1, 0).UTC(),
+		},
+		Config: config,
+		Recipe: recipe,
+		Now:    func() time.Time { return time.Unix(2, 0).UTC() },
+	})
+
+	require.NoError(t, err)
+	require.Nil(t, result.Records[0].TagVector)
+	require.Nil(t, result.Records[0].SemanticTags)
+	require.Equal(t, []string{"cat", "pet"}, result.Records[0].Chunk.Metadata.Tags)
+	require.Equal(t, 1, vectorizer.imageCalls)
+	require.Empty(t, vectorizer.textInputs)
+}
+
 func TestOllamaCaptionImageContentConvertsWebPToPNG(t *testing.T) {
 	content, err := base64.StdEncoding.DecodeString("UklGRjwAAABXRUJQVlA4IDAAAADQAQCdASoCAAIAAgA0JaACdLoB+AADsAD+8MQL/yC5YXXI1/8gP+QH/ID/+PIAAAA=")
 	require.NoError(t, err)
@@ -151,6 +272,14 @@ func TestImagePythonEnvPinsModelCachesUnderDataDir(t *testing.T) {
 	require.NotContains(t, env, "XDG_CACHE_HOME=/bad/xdg")
 }
 
+func requireVectorApprox(t *testing.T, got []float32, want []float32) {
+	t.Helper()
+	require.Len(t, got, len(want))
+	for i := range want {
+		require.InDelta(t, want[i], got[i], 1e-6)
+	}
+}
+
 type fakeVectorizer struct{}
 
 func (fakeVectorizer) EmbedImage(context.Context, ImageModelConfig, string, []byte) ([]float32, error) {
@@ -165,6 +294,12 @@ type fakeCaptioner struct{}
 
 func (fakeCaptioner) Caption(context.Context, string, []byte, domain.ScanProviderConfig) (Caption, error) {
 	return Caption{Title: "cat photo", Tags: []string{"Pet", "cat"}, Description: "a cat on a chair"}, nil
+}
+
+type noTagsCaptioner struct{}
+
+func (noTagsCaptioner) Caption(context.Context, string, []byte, domain.ScanProviderConfig) (Caption, error) {
+	return Caption{Title: "cat photo", Description: "a cat on a chair"}, nil
 }
 
 type recordingVectorizer struct {
@@ -183,4 +318,24 @@ func (v *recordingVectorizer) EmbedText(_ context.Context, _ ImageModelConfig, t
 	v.textCalls++
 	v.lastText = strings.ToLower(text)
 	return make([]float32, v.dimension), nil
+}
+
+type poolingVectorizer struct {
+	imageVector []float32
+	textVectors map[string][]float32
+	imageCalls  int
+	textInputs  []string
+}
+
+func (v *poolingVectorizer) EmbedImage(context.Context, ImageModelConfig, string, []byte) ([]float32, error) {
+	v.imageCalls++
+	return append([]float32(nil), v.imageVector...), nil
+}
+
+func (v *poolingVectorizer) EmbedText(_ context.Context, _ ImageModelConfig, text string) ([]float32, error) {
+	v.textInputs = append(v.textInputs, text)
+	if vector, ok := v.textVectors[text]; ok {
+		return append([]float32(nil), vector...), nil
+	}
+	return nil, nil
 }
