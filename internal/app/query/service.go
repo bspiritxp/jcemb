@@ -54,14 +54,15 @@ type Request struct {
 }
 
 type Result struct {
-	Query    string
-	Tags     []string
-	Limit    int
-	PathRoot string
-	RootDir  string
-	Manifest domain.StoreConfig
-	Results  []domain.SearchResult
-	Full     bool
+	Query     string
+	Tags      []string
+	QueryTags []string
+	Limit     int
+	PathRoot  string
+	RootDir   string
+	Manifest  domain.StoreConfig
+	Results   []domain.SearchResult
+	Full      bool
 }
 
 type queryScope struct {
@@ -169,14 +170,15 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 	}
 
 	return Result{
-		Query:    normalized.Text,
-		Tags:     append([]string(nil), normalized.Tags...),
-		Limit:    normalized.Limit,
-		PathRoot: normalized.Path,
-		RootDir:  resultRootDir(scopes),
-		Manifest: combinedManifest(manifests),
-		Results:  sorted,
-		Full:     normalized.Full,
+		Query:     normalized.Text,
+		Tags:      append([]string(nil), normalized.Tags...),
+		QueryTags: append([]string(nil), queryTags...),
+		Limit:     normalized.Limit,
+		PathRoot:  normalized.Path,
+		RootDir:   resultRootDir(scopes),
+		Manifest:  combinedManifest(manifests),
+		Results:   sorted,
+		Full:      normalized.Full,
 	}, nil
 }
 

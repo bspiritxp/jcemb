@@ -20,6 +20,7 @@ type QueryJSONEnvelope struct {
 	FileType  string            `json:"file_type"`
 	VectorDim int               `json:"vector_dim"`
 	Tags      []string          `json:"tags"`
+	QueryTags []string          `json:"query_tags,omitempty"`
 	Results   []QueryJSONResult `json:"results"`
 }
 
@@ -42,6 +43,11 @@ func RenderQueryText(writer io.Writer, result queryapp.Result) error {
 	}
 	if result.Manifest.FileType != "" {
 		if _, err := fmt.Fprintf(writer, "%s %s %s\n", Colorize(Dim, "•"), Colorize(Dim, "File type:"), result.Manifest.FileType); err != nil {
+			return err
+		}
+	}
+	if len(result.QueryTags) > 0 {
+		if _, err := fmt.Fprintf(writer, "%s %s %s\n", Colorize(Green, "🔖"), Colorize(Dim, "Extracted Tags:"), Colorize(Green, strings.Join(result.QueryTags, ", "))); err != nil {
 			return err
 		}
 	}
@@ -114,6 +120,7 @@ func RenderQueryJSON(writer io.Writer, result queryapp.Result) error {
 		FileType:  result.Manifest.FileType,
 		VectorDim: result.Manifest.VectorDim,
 		Tags:      append([]string(nil), result.Tags...),
+		QueryTags: append([]string(nil), result.QueryTags...),
 		Results:   make([]QueryJSONResult, 0, len(result.Results)),
 	}
 
