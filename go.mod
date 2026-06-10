@@ -1,6 +1,6 @@
 module github.com/bspiritxp/jcemb
 
-go 1.26.2
+go 1.26
 
 require (
 	github.com/denormal/go-gitignore v0.0.0-20180930084346-ae8ad1d07817
