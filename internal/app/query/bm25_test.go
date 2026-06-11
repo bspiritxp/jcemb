@@ -13,10 +13,22 @@ func TestApplyBM25RerankBoostsLexicalMatch(t *testing.T) {
 		newBM25Result("target", "docs/bm25.md", "bm25 rerank lexical exact match", 0.90),
 	}
 
-	reranked := applyBM25Rerank("bm25 rerank", results)
+	reranked, applied := applyBM25Rerank("bm25 rerank", results)
 
+	require.True(t, applied)
 	require.Equal(t, "target", reranked[0].Chunk.ID)
 	require.Equal(t, 1, reranked[0].Rank)
+}
+
+func TestApplyBM25RerankReportsNoopWhenQueryHasNoTokens(t *testing.T) {
+	results := []domain.SearchResult{
+		newBM25Result("generic", "docs/generic.md", "general vector search notes", 0.99),
+	}
+
+	reranked, applied := applyBM25Rerank("!!!", results)
+
+	require.False(t, applied)
+	require.Equal(t, results, reranked)
 }
 
 func TestTokenizeBM25HandlesCJKRunes(t *testing.T) {

@@ -101,14 +101,29 @@ func TestRunQueryLoadsEnabledTagExtractorFromConfig(t *testing.T) {
 		return QueryResult{}, nil
 	}
 
-	_, err := RunQuery(context.Background(), QueryRequest{Text: "long enough query text", Provider: defaults.Provider})
+	_, err := RunQuery(context.Background(), QueryRequest{Text: "long enough query text", Provider: defaults.Provider, Explain: true})
 	require.NoError(t, err)
+	require.True(t, captured.Explain)
 	require.Equal(t, config.OpenAIProviderName, captured.TagExtractor.Provider)
 	require.Equal(t, "gpt-4.1-mini", captured.TagExtractor.Model)
 	require.Equal(t, 30*time.Second, captured.TagExtractor.Timeout)
 	require.Equal(t, "query", captured.TagExtractor.Options["custom_tag_option"])
 	require.Equal(t, defaults.OpenAI.BaseURL, captured.TagExtractor.Options["openai_base_url"])
 	require.Equal(t, defaults.OpenAI.APIKey, captured.TagExtractor.Options["openai_api_key"])
+}
+
+func TestQueryExplainRequiresJSONOutput(t *testing.T) {
+	err := Query(QueryRequest{Text: "lookup", Explain: true, Format: "text"})
+
+	require.Error(t, err)
+	require.Equal(t, "query: --explain requires JSON output", err.Error())
+}
+
+func TestQueryExplainRejectsJSONFlagWithNonJSONFormat(t *testing.T) {
+	err := Query(QueryRequest{Text: "lookup", Explain: true, JSON: true, Format: "table"})
+
+	require.Error(t, err)
+	require.Equal(t, "query: --explain requires JSON output", err.Error())
 }
 
 func persistedConfigFromSettings(settings config.Settings, tagExtractor config.TagExtractorConfig) config.PersistedConfig {

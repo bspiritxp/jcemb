@@ -92,11 +92,22 @@ type SearchQuery struct {
 }
 
 type SearchResult struct {
-	Chunk    Chunk
-	Score    float64
-	TagScore float64
-	Rank     int
-	Vector   []float32
+	Chunk             Chunk
+	Score             float64
+	ContentScore      float64
+	HasContentScore   bool
+	TagScore          float64
+	HasTagScore       bool
+	PreRerankScore    float64
+	HasPreRerankScore bool
+	BM25Score         float64
+	BM25Norm          float64
+	SemanticNorm      float64
+	MMRRelevance      float64
+	MMRDiversity      float64
+	MMRScore          float64
+	Rank              int
+	Vector            []float32
 }
 
 type SearchResults []SearchResult

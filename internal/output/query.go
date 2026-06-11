@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	queryapp "github.com/bspiritxp/jcemb/internal/app/query"
+	"github.com/bspiritxp/jcemb/internal/domain"
 )
 
 const QuerySchemaVersionV1 = "v1"
@@ -21,17 +22,50 @@ type QueryJSONEnvelope struct {
 	VectorDim int               `json:"vector_dim"`
 	Tags      []string          `json:"tags"`
 	QueryTags []string          `json:"query_tags,omitempty"`
+	Explain   *QueryJSONExplain `json:"explain,omitempty"`
 	Results   []QueryJSONResult `json:"results"`
 }
 
 type QueryJSONResult struct {
-	Rank      int      `json:"rank"`
-	Score     float64  `json:"score"`
-	RelPath   string   `json:"rel_path"`
-	TitlePath []string `json:"title_path"`
-	Tags      []string `json:"tags"`
-	ChunkID   string   `json:"chunk_id"`
-	Preview   string   `json:"preview"`
+	Rank      int                     `json:"rank"`
+	Score     float64                 `json:"score"`
+	RelPath   string                  `json:"rel_path"`
+	TitlePath []string                `json:"title_path"`
+	Tags      []string                `json:"tags"`
+	ChunkID   string                  `json:"chunk_id"`
+	Preview   string                  `json:"preview"`
+	Explain   *QueryJSONResultExplain `json:"explain,omitempty"`
+}
+
+type QueryJSONExplain struct {
+	SearchWindow        int     `json:"search_window"`
+	ThresholdAlpha      float64 `json:"threshold_alpha"`
+	ThresholdDelta      float64 `json:"threshold_delta"`
+	Unique              bool    `json:"unique"`
+	Rerank              string  `json:"rerank"`
+	MMRLambda           float64 `json:"mmr_lambda"`
+	TagWeight           float64 `json:"tag_weight"`
+	UseTagFusion        bool    `json:"use_tag_fusion"`
+	ScopeCount          int     `json:"scope_count"`
+	RetrievedCount      int     `json:"retrieved_count"`
+	AfterThresholdCount int     `json:"after_threshold_count"`
+	AfterUniqueCount    int     `json:"after_unique_count"`
+	FinalCount          int     `json:"final_count"`
+	ThresholdTopScore   float64 `json:"threshold_top_score"`
+	FinalStrategy       string  `json:"final_strategy"`
+}
+
+type QueryJSONResultExplain struct {
+	ContentScore   float64  `json:"content_score"`
+	TagScore       *float64 `json:"tag_score,omitempty"`
+	PreRerankScore float64  `json:"pre_rerank_score"`
+	FinalScore     float64  `json:"final_score"`
+	BM25Score      *float64 `json:"bm25_score,omitempty"`
+	BM25Norm       *float64 `json:"bm25_norm,omitempty"`
+	SemanticNorm   *float64 `json:"semantic_norm,omitempty"`
+	MMRRelevance   *float64 `json:"mmr_relevance,omitempty"`
+	MMRDiversity   *float64 `json:"mmr_diversity,omitempty"`
+	MMRScore       *float64 `json:"mmr_score,omitempty"`
 }
 
 func RenderQueryText(writer io.Writer, result queryapp.Result) error {
@@ -123,9 +157,28 @@ func RenderQueryJSON(writer io.Writer, result queryapp.Result) error {
 		QueryTags: append([]string(nil), result.QueryTags...),
 		Results:   make([]QueryJSONResult, 0, len(result.Results)),
 	}
+	if result.Explain != nil {
+		envelope.Explain = &QueryJSONExplain{
+			SearchWindow:        result.Explain.SearchWindow,
+			ThresholdAlpha:      result.Explain.ThresholdAlpha,
+			ThresholdDelta:      result.Explain.ThresholdDelta,
+			Unique:              result.Explain.Unique,
+			Rerank:              result.Explain.Rerank,
+			MMRLambda:           result.Explain.MMRLambda,
+			TagWeight:           result.Explain.TagWeight,
+			UseTagFusion:        result.Explain.UseTagFusion,
+			ScopeCount:          result.Explain.ScopeCount,
+			RetrievedCount:      result.Explain.RetrievedCount,
+			AfterThresholdCount: result.Explain.AfterThresholdCount,
+			AfterUniqueCount:    result.Explain.AfterUniqueCount,
+			FinalCount:          result.Explain.FinalCount,
+			ThresholdTopScore:   result.Explain.ThresholdTopScore,
+			FinalStrategy:       result.Explain.FinalStrategy,
+		}
+	}
 
 	for _, entry := range result.Results {
-		envelope.Results = append(envelope.Results, QueryJSONResult{
+		row := QueryJSONResult{
 			Rank:      entry.Rank,
 			Score:     entry.Score,
 			RelPath:   entry.Chunk.Metadata.RelPath,
@@ -133,12 +186,42 @@ func RenderQueryJSON(writer io.Writer, result queryapp.Result) error {
 			Tags:      append([]string(nil), entry.Chunk.Metadata.Tags...),
 			ChunkID:   entry.Chunk.ID,
 			Preview:   previewText(entry.Chunk.Content),
-		})
+		}
+		if result.Explain != nil {
+			row.Explain = queryJSONResultExplain(entry, result.Explain)
+		}
+		envelope.Results = append(envelope.Results, row)
 	}
 
 	encoder := json.NewEncoder(writer)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(envelope)
+}
+
+func queryJSONResultExplain(entry domain.SearchResult, explain *queryapp.Explain) *QueryJSONResultExplain {
+	row := &QueryJSONResultExplain{
+		ContentScore:   entry.ContentScore,
+		PreRerankScore: entry.PreRerankScore,
+		FinalScore:     entry.Score,
+	}
+	if entry.HasTagScore {
+		row.TagScore = float64Ptr(entry.TagScore)
+	}
+	if explain.FinalStrategy == "bm25" {
+		row.BM25Score = float64Ptr(entry.BM25Score)
+		row.BM25Norm = float64Ptr(entry.BM25Norm)
+		row.SemanticNorm = float64Ptr(entry.SemanticNorm)
+	}
+	if explain.FinalStrategy == "mmr" {
+		row.MMRRelevance = float64Ptr(entry.MMRRelevance)
+		row.MMRDiversity = float64Ptr(entry.MMRDiversity)
+		row.MMRScore = float64Ptr(entry.MMRScore)
+	}
+	return row
+}
+
+func float64Ptr(value float64) *float64 {
+	return &value
 }
 
 func RenderQueryTable(writer io.Writer, result queryapp.Result) error {

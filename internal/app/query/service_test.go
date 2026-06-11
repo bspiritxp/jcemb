@@ -873,12 +873,18 @@ func TestServiceRunAppliesBM25RerankAfterGlobalMerge(t *testing.T) {
 		ThresholdAlpha: -1,
 		ThresholdDelta: -1,
 		Rerank:         "bm25",
+		Explain:        true,
 	})
 	require.NoError(t, err)
 	require.Equal(t, []string{"target", "unrelated"}, resultIDs(result.Results))
 	require.Equal(t, []int{1, 2}, resultRanks(result.Results))
 	require.Greater(t, result.Results[0].Score, result.Results[1].Score)
 	require.Less(t, result.Results[1].Score, 1.0)
+	require.NotNil(t, result.Explain)
+	require.Equal(t, "bm25", result.Explain.FinalStrategy)
+	require.Greater(t, result.Results[0].BM25Score, 0.0)
+	require.Greater(t, result.Results[0].BM25Norm, 0.0)
+	require.Greater(t, result.Results[0].SemanticNorm, 0.0)
 }
 
 func TestServiceRunSkipsStaleCollectionsWhenPathOmitted(t *testing.T) {
@@ -1257,6 +1263,77 @@ func TestServiceThresholdDisabledWhenAlphaDeltaNegative(t *testing.T) {
 	require.Equal(t, []int{1, 2, 3}, resultRanks(result.Results))
 }
 
+func TestServiceExplainRecordsStageCounts(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	createdAt := time.Date(2026, 4, 23, 12, 30, 0, 0, time.UTC)
+	dataRoot := t.TempDir()
+	persistIndexedCollection(t, testStoreConfig(rootDir, dataRoot, ollama.Name, ollama.DefaultModel, 3, createdAt), nil)
+	registerCollectionAt(t, dataRoot, rootDir)
+
+	provider := &fakeProvider{vector: []float32{1, 0, 0}}
+	store := &recordingVectorStore{results: []domain.SearchResult{
+		newSearchResult("chunk-a", "docs/a.md", 1.0),
+		newSearchResult("chunk-b", "docs/b.md", 0.9),
+		newSearchResult("chunk-a-duplicate", "docs/a.md", 0.85),
+		newSearchResult("chunk-c", "docs/c.md", 0.5),
+	}}
+	service := NewService(Dependencies{
+		ResolveAppPaths: newTestAppPaths(t, dataRoot),
+		GetProvider: func(name string) (registry.ProviderFactory, error) {
+			require.Equal(t, ollama.Name, name)
+			return func(config domain.ProviderConfig) (domain.EmbedderProvider, error) {
+				return provider, nil
+			}, nil
+		},
+		GetVectorStore: func(name string) (registry.VectorStoreFactory, error) {
+			require.Equal(t, lancedb.Name, name)
+			return func(config domain.StoreConfig) (domain.VectorStore, error) {
+				return store, nil
+			}, nil
+		},
+	})
+
+	result, err := service.Run(context.Background(), Request{
+		Text:           "explain",
+		Path:           rootDir,
+		Limit:          1,
+		Unique:         true,
+		ThresholdAlpha: 0.8,
+		ThresholdDelta: 0.2,
+		MMRLambda:      1.0,
+		Explain:        true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result.Explain)
+	require.Equal(t, 20, result.Explain.SearchWindow)
+	require.Equal(t, 1, result.Explain.ScopeCount)
+	require.Equal(t, 4, result.Explain.RetrievedCount)
+	require.Equal(t, 3, result.Explain.AfterThresholdCount)
+	require.Equal(t, 2, result.Explain.AfterUniqueCount)
+	require.Equal(t, 1, result.Explain.FinalCount)
+	require.Equal(t, 1.0, result.Explain.ThresholdTopScore)
+	require.Equal(t, "truncate", result.Explain.FinalStrategy)
+}
+
+func TestSeedExplainScoresPreservesExplicitZeroContentScore(t *testing.T) {
+	t.Parallel()
+
+	results := []domain.SearchResult{{
+		Score:             0.3,
+		ContentScore:      0,
+		HasContentScore:   true,
+		PreRerankScore:    0.3,
+		HasPreRerankScore: true,
+	}}
+
+	seedExplainScores(results)
+
+	require.Equal(t, 0.0, results[0].ContentScore)
+	require.Equal(t, 0.3, results[0].PreRerankScore)
+}
+
 func TestServiceTruncatesToUserLimitAfterDedup(t *testing.T) {
 	t.Parallel()
 
@@ -1362,11 +1439,17 @@ func TestServiceAppliesMMRBeforeFinalLimit(t *testing.T) {
 		ThresholdAlpha: -1,
 		ThresholdDelta: -1,
 		MMRLambda:      0.5,
+		Explain:        true,
 	})
 	require.NoError(t, err)
 	require.Equal(t, []string{"doc-a-1", "doc-b", "doc-a-3"}, resultIDs(result.Results))
 	require.Equal(t, []int{1, 2, 3}, resultRanks(result.Results))
 	require.Equal(t, []float64{0.98, 0.9, 0.96}, resultScores(result.Results))
+	require.NotNil(t, result.Explain)
+	require.Equal(t, "mmr", result.Explain.FinalStrategy)
+	require.Greater(t, result.Results[0].MMRRelevance, 0.0)
+	require.Greater(t, result.Results[0].MMRScore, 0.0)
+	require.Greater(t, result.Results[2].MMRDiversity, 0.0)
 }
 
 func TestServiceMMRDisabledWhenLambdaOne(t *testing.T) {

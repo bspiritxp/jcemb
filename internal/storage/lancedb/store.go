@@ -288,13 +288,18 @@ func (s *Store) Search(ctx context.Context, query domain.SearchQuery) ([]domain.
 		}
 
 		contentScore := cosineSimilarity(query.Vector, record.Vector)
-		tagScore, finalScore := fusedSearchScores(query, record, contentScore)
+		tagScore, finalScore, hasTagScore := fusedSearchScores(query, record, contentScore)
 
 		results = append(results, domain.SearchResult{
-			Chunk:    cloneChunk(record.Chunk),
-			Score:    finalScore,
-			TagScore: tagScore,
-			Vector:   append([]float32(nil), record.Vector...),
+			Chunk:             cloneChunk(record.Chunk),
+			Score:             finalScore,
+			ContentScore:      contentScore,
+			HasContentScore:   true,
+			TagScore:          tagScore,
+			HasTagScore:       hasTagScore,
+			PreRerankScore:    finalScore,
+			HasPreRerankScore: true,
+			Vector:            append([]float32(nil), record.Vector...),
 		})
 	}
 
@@ -760,14 +765,14 @@ func cosineSimilarity(left []float32, right []float32) float64 {
 	return dot / (math.Sqrt(leftNorm) * math.Sqrt(rightNorm))
 }
 
-func fusedSearchScores(query domain.SearchQuery, record domain.VectorRecord, contentScore float64) (tagScore float64, finalScore float64) {
+func fusedSearchScores(query domain.SearchQuery, record domain.VectorRecord, contentScore float64) (tagScore float64, finalScore float64, hasTagScore bool) {
 	if !canFuseTagScore(query, record) {
-		return 0, contentScore
+		return 0, contentScore, false
 	}
 
 	tagScore = cosineSimilarity(query.TagVector, record.TagVector)
 	finalScore = ((1 - query.TagWeight) * contentScore) + (query.TagWeight * tagScore)
-	return tagScore, finalScore
+	return tagScore, finalScore, true
 }
 
 func canFuseTagScore(query domain.SearchQuery, record domain.VectorRecord) bool {

@@ -50,6 +50,7 @@ func TestRenderQueryJSONUsesVersionedSchemaV1(t *testing.T) {
 	require.Equal(t, "bge-m3", payload.Model)
 	require.Equal(t, 1024, payload.VectorDim)
 	require.Equal(t, []string{"go", "vector"}, payload.Tags)
+	require.Nil(t, payload.Explain)
 	require.Len(t, payload.Results, 1)
 	require.Equal(t, 1, payload.Results[0].Rank)
 	require.Equal(t, 0.99, payload.Results[0].Score)
@@ -58,6 +59,59 @@ func TestRenderQueryJSONUsesVersionedSchemaV1(t *testing.T) {
 	require.Equal(t, []string{"image", "search"}, payload.Results[0].Tags)
 	require.Equal(t, "chunk-1", payload.Results[0].ChunkID)
 	require.Equal(t, "Hello world with extra whitespace.", payload.Results[0].Preview)
+	require.Nil(t, payload.Results[0].Explain)
+}
+
+func TestRenderQueryJSONIncludesExplainWhenRequested(t *testing.T) {
+	t.Parallel()
+
+	result := sampleQueryResult()
+	result.Explain = &queryapp.Explain{
+		SearchWindow:        20,
+		ThresholdAlpha:      0.85,
+		ThresholdDelta:      0.1,
+		Unique:              true,
+		Rerank:              "off",
+		MMRLambda:           0.5,
+		TagWeight:           0.3,
+		UseTagFusion:        true,
+		ScopeCount:          1,
+		RetrievedCount:      4,
+		AfterThresholdCount: 3,
+		AfterUniqueCount:    2,
+		FinalCount:          1,
+		ThresholdTopScore:   0.99,
+		FinalStrategy:       "mmr",
+	}
+	result.Results[0].ContentScore = 0.88
+	result.Results[0].HasContentScore = true
+	result.Results[0].TagScore = 0.74
+	result.Results[0].HasTagScore = true
+	result.Results[0].PreRerankScore = 0.838
+	result.Results[0].HasPreRerankScore = true
+	result.Results[0].MMRRelevance = 0.88
+	result.Results[0].MMRDiversity = 0.41
+	result.Results[0].MMRScore = 0.235
+	var buffer bytes.Buffer
+
+	require.NoError(t, RenderQueryJSON(&buffer, result))
+
+	var payload QueryJSONEnvelope
+	require.NoError(t, json.Unmarshal(buffer.Bytes(), &payload))
+	require.NotNil(t, payload.Explain)
+	require.Equal(t, 20, payload.Explain.SearchWindow)
+	require.True(t, payload.Explain.Unique)
+	require.Equal(t, "mmr", payload.Explain.FinalStrategy)
+	require.Len(t, payload.Results, 1)
+	require.NotNil(t, payload.Results[0].Explain)
+	require.Equal(t, 0.88, payload.Results[0].Explain.ContentScore)
+	require.NotNil(t, payload.Results[0].Explain.TagScore)
+	require.Equal(t, 0.74, *payload.Results[0].Explain.TagScore)
+	require.Equal(t, 0.838, payload.Results[0].Explain.PreRerankScore)
+	require.Equal(t, 0.99, payload.Results[0].Explain.FinalScore)
+	require.Nil(t, payload.Results[0].Explain.BM25Score)
+	require.NotNil(t, payload.Results[0].Explain.MMRScore)
+	require.Equal(t, 0.235, *payload.Results[0].Explain.MMRScore)
 }
 
 func TestRenderQueryTSVUsesStableFields(t *testing.T) {

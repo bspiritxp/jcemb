@@ -47,20 +47,28 @@ func mmrSelect(queryVec []float32, candidates []domain.SearchResult, k int, lamb
 			firstScore = relevance
 		}
 	}
+	remaining[firstIndex].MMRRelevance = firstScore
+	remaining[firstIndex].MMRDiversity = 0
+	remaining[firstIndex].MMRScore = lambda * firstScore
 	selected = append(selected, remaining[firstIndex])
 	remaining = append(remaining[:firstIndex], remaining[firstIndex+1:]...)
 
 	for len(selected) < k && len(remaining) > 0 {
 		bestIndex := 0
-		bestScore := mmrScore(queryVec, remaining[0], selected, lambda)
+		bestScore, bestRelevance, bestDiversity := mmrScore(queryVec, remaining[0], selected, lambda)
 		for index := 1; index < len(remaining); index++ {
-			score := mmrScore(queryVec, remaining[index], selected, lambda)
+			score, relevance, diversity := mmrScore(queryVec, remaining[index], selected, lambda)
 			if score > bestScore {
 				bestIndex = index
 				bestScore = score
+				bestRelevance = relevance
+				bestDiversity = diversity
 			}
 		}
 
+		remaining[bestIndex].MMRRelevance = bestRelevance
+		remaining[bestIndex].MMRDiversity = bestDiversity
+		remaining[bestIndex].MMRScore = bestScore
 		selected = append(selected, remaining[bestIndex])
 		remaining = append(remaining[:bestIndex], remaining[bestIndex+1:]...)
 	}
@@ -72,7 +80,7 @@ func mmrSelect(queryVec []float32, candidates []domain.SearchResult, k int, lamb
 	return selected
 }
 
-func mmrScore(queryVec []float32, candidate domain.SearchResult, selected []domain.SearchResult, lambda float64) float64 {
+func mmrScore(queryVec []float32, candidate domain.SearchResult, selected []domain.SearchResult, lambda float64) (float64, float64, float64) {
 	relevance := cosineSimilarity(queryVec, candidate.Vector)
 	diversity := 0.0
 	for _, entry := range selected {
@@ -81,7 +89,8 @@ func mmrScore(queryVec []float32, candidate domain.SearchResult, selected []doma
 			diversity = similarity
 		}
 	}
-	return lambda*relevance - (1-lambda)*diversity
+	score := lambda*relevance - (1-lambda)*diversity
+	return score, relevance, diversity
 }
 
 func truncateAndRerank(results []domain.SearchResult, k int) []domain.SearchResult {

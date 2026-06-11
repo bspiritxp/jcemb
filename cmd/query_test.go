@@ -34,6 +34,7 @@ func TestNewQueryCmd(t *testing.T) {
 	require.NotNil(t, flags.Lookup("mmr-lambda"))
 	require.NotNil(t, flags.Lookup("search-window"))
 	require.NotNil(t, flags.Lookup("rerank"))
+	require.NotNil(t, flags.Lookup("explain"))
 	require.Equal(t, "0.3", flags.Lookup("tag-weight").DefValue)
 }
 
@@ -68,6 +69,21 @@ func TestQueryHelpShowsFlags(t *testing.T) {
 	require.Contains(t, output, "--mmr-lambda")
 	require.Contains(t, output, "--search-window")
 	require.Contains(t, output, "--rerank")
+	require.Contains(t, output, "--explain")
+}
+
+func TestQueryCommandPassesExplainFlag(t *testing.T) {
+	called := false
+	cmd := newQueryCmd(app.Bootstrap{}, func(request app.QueryRequest) error {
+		called = true
+		require.True(t, request.Explain)
+		require.True(t, request.JSON)
+		return nil
+	})
+	cmd.SetArgs([]string{"--json", "--explain", "query"})
+
+	require.NoError(t, cmd.Execute())
+	require.True(t, called)
 }
 
 func TestQueryTagWeightValidationRejectsOutOfRangeValues(t *testing.T) {

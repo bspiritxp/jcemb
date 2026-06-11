@@ -63,6 +63,7 @@ type QueryRequest struct {
 	SearchWindow    int
 	Format          string
 	Rerank          string
+	Explain         bool
 }
 
 type EmbedResult = embedapp.Result
@@ -160,6 +161,7 @@ func RunQuery(ctx context.Context, request QueryRequest) (QueryResult, error) {
 		MMRLambda:       request.MMRLambda,
 		SearchWindow:    request.SearchWindow,
 		Rerank:          request.Rerank,
+		Explain:         request.Explain,
 	})
 }
 
@@ -219,6 +221,9 @@ func Query(request QueryRequest) error {
 	default:
 		return fmt.Errorf("query: format must be text, json, table, tsv, or tsv-z")
 	}
+	if request.Explain && !isJSONQueryOutput(format, request.JSON) {
+		return fmt.Errorf("query: --explain requires JSON output")
+	}
 	result, err := RunQuery(context.Background(), request)
 	if err != nil {
 		return err
@@ -239,6 +244,10 @@ func Query(request QueryRequest) error {
 		return output.RenderQueryTSVZ(os.Stdout, result)
 	}
 	return output.RenderQueryText(os.Stdout, result)
+}
+
+func isJSONQueryOutput(format string, jsonFlag bool) bool {
+	return format == "json" || jsonFlag && (format == "" || format == "text")
 }
 
 func RunShow(request ShowRequest) (ShowResult, error) {

@@ -26,6 +26,7 @@ type QueryOptions struct {
 	MMRLambda      float64
 	SearchWindow   int
 	Rerank         string
+	Explain        bool
 }
 
 func NewQueryCmd() *cobra.Command {
@@ -82,6 +83,7 @@ func newQueryCmd(bootstrap app.Bootstrap, runner queryCommandRunner) *cobra.Comm
 				MMRLambda:       options.MMRLambda,
 				SearchWindow:    options.SearchWindow,
 				Rerank:          options.Rerank,
+				Explain:         options.Explain,
 			})
 		},
 	}
@@ -101,6 +103,7 @@ func newQueryCmd(bootstrap app.Bootstrap, runner queryCommandRunner) *cobra.Comm
 	cmd.Flags().Float64Var(&options.MMRLambda, "mmr-lambda", options.MMRLambda, "MMR lambda; 1.0 disables MMR (pure score order), negative also disables")
 	cmd.Flags().IntVar(&options.SearchWindow, "search-window", options.SearchWindow, "internal candidate window before threshold/dedup/MMR (0=auto)")
 	cmd.Flags().StringVar(&options.Rerank, "rerank", options.Rerank, "optional reranker: off or bm25")
+	cmd.Flags().BoolVar(&options.Explain, "explain", options.Explain, "include JSON query scoring diagnostics")
 
 	return cmd
 }

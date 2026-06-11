@@ -15,13 +15,13 @@ const (
 	bm25SemanticWeight = 0.7
 )
 
-func applyBM25Rerank(queryText string, results []domain.SearchResult) []domain.SearchResult {
+func applyBM25Rerank(queryText string, results []domain.SearchResult) ([]domain.SearchResult, bool) {
 	if len(results) == 0 {
-		return results
+		return results, false
 	}
 	queryTokens := tokenizeBM25(queryText)
 	if len(queryTokens) == 0 {
-		return results
+		return results, false
 	}
 
 	docTokens := make([][]string, len(results))
@@ -41,7 +41,7 @@ func applyBM25Rerank(queryText string, results []domain.SearchResult) []domain.S
 		}
 	}
 	if totalLen == 0 {
-		return results
+		return results, false
 	}
 
 	avgLen := float64(totalLen) / float64(len(docTokens))
@@ -58,13 +58,20 @@ func applyBM25Rerank(queryText string, results []domain.SearchResult) []domain.S
 
 	reranked := append([]domain.SearchResult(nil), results...)
 	for i := range reranked {
+		if !reranked[i].HasPreRerankScore {
+			reranked[i].PreRerankScore = reranked[i].Score
+			reranked[i].HasPreRerankScore = true
+		}
+		reranked[i].BM25Score = bm25Scores[i]
+		reranked[i].BM25Norm = bm25Norm[i]
+		reranked[i].SemanticNorm = semanticNorm[i]
 		reranked[i].Score = bm25SemanticWeight*semanticNorm[i] + (1-bm25SemanticWeight)*bm25Norm[i]
 	}
 	sort.Sort(domain.SearchResults(reranked))
 	for i := range reranked {
 		reranked[i].Rank = i + 1
 	}
-	return reranked
+	return reranked, true
 }
 
 func bm25Score(queryTokens []string, docTokens []string, docFreq map[string]int, docCount int, avgLen float64) float64 {

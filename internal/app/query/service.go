@@ -51,6 +51,7 @@ type Request struct {
 	MMRLambda       float64
 	SearchWindow    int
 	Rerank          string
+	Explain         bool
 }
 
 type Result struct {
@@ -63,6 +64,25 @@ type Result struct {
 	Manifest  domain.StoreConfig
 	Results   []domain.SearchResult
 	Full      bool
+	Explain   *Explain
+}
+
+type Explain struct {
+	SearchWindow        int
+	ThresholdAlpha      float64
+	ThresholdDelta      float64
+	Unique              bool
+	Rerank              string
+	MMRLambda           float64
+	TagWeight           float64
+	UseTagFusion        bool
+	ScopeCount          int
+	RetrievedCount      int
+	AfterThresholdCount int
+	AfterUniqueCount    int
+	FinalCount          int
+	ThresholdTopScore   float64
+	FinalStrategy       string
 }
 
 type queryScope struct {
@@ -147,28 +167,50 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 	results := make([]domain.SearchResult, 0)
 	manifests := make([]domain.StoreConfig, 0, len(scopes))
 	queryVectors := make([][]float32, 0, len(scopes))
+	actualUseTagFusion := false
 	for _, scope := range scopes {
-		snapshot, queryVector, collectionResults, err := s.searchScope(ctx, scope, normalized, &queryTagState)
+		snapshot, queryVector, collectionResults, scopeUseTagFusion, err := s.searchScope(ctx, scope, normalized, &queryTagState)
 		if err != nil {
 			return Result{}, err
 		}
+		actualUseTagFusion = actualUseTagFusion || scopeUseTagFusion
 		manifests = append(manifests, snapshot.Config)
 		queryVectors = append(queryVectors, queryVector)
 		results = append(results, collectionResults...)
 	}
 
 	sorted := domain.SortSearchResults(results)
+	seedExplainScores(sorted)
+	explain := buildExplain(normalized, actualUseTagFusion, len(scopes), len(sorted))
+	if len(sorted) > 0 {
+		explain.ThresholdTopScore = sorted[0].Score
+	}
 	sorted = applyDynamicThreshold(sorted, normalized.ThresholdAlpha, normalized.ThresholdDelta)
+	explain.AfterThresholdCount = len(sorted)
 	if normalized.Unique {
 		sorted = dedupByRelPath(sorted)
 	}
+	explain.AfterUniqueCount = len(sorted)
 	if normalized.Rerank == "bm25" {
-		sorted = applyBM25Rerank(normalized.Text, sorted)
+		var applied bool
+		sorted, applied = applyBM25Rerank(normalized.Text, sorted)
 		sorted = truncateAndRerank(sorted, normalized.Limit)
+		if applied {
+			explain.FinalStrategy = "bm25"
+		} else {
+			explain.FinalStrategy = "truncate"
+		}
 	} else {
-		sorted = selectFinalResults(queryVectors, manifests, sorted, normalized.Limit, normalized.MMRLambda)
+		var strategy string
+		sorted, strategy = selectFinalResults(queryVectors, manifests, sorted, normalized.Limit, normalized.MMRLambda)
+		explain.FinalStrategy = strategy
 	}
+	explain.FinalCount = len(sorted)
 
+	var resultExplain *Explain
+	if normalized.Explain {
+		resultExplain = &explain
+	}
 	return Result{
 		Query:     normalized.Text,
 		Tags:      append([]string(nil), normalized.Tags...),
@@ -179,7 +221,39 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 		Manifest:  combinedManifest(manifests),
 		Results:   sorted,
 		Full:      normalized.Full,
+		Explain:   resultExplain,
 	}, nil
+}
+
+func buildExplain(request Request, useTagFusion bool, scopeCount int, retrievedCount int) Explain {
+	return Explain{
+		SearchWindow:        effectiveSearchWindow(request.Limit, request.SearchWindow),
+		ThresholdAlpha:      request.ThresholdAlpha,
+		ThresholdDelta:      request.ThresholdDelta,
+		Unique:              request.Unique,
+		Rerank:              request.Rerank,
+		MMRLambda:           request.MMRLambda,
+		TagWeight:           request.TagWeight,
+		UseTagFusion:        useTagFusion,
+		ScopeCount:          scopeCount,
+		RetrievedCount:      retrievedCount,
+		AfterThresholdCount: retrievedCount,
+		AfterUniqueCount:    retrievedCount,
+		FinalStrategy:       "truncate",
+	}
+}
+
+func seedExplainScores(results []domain.SearchResult) {
+	for index := range results {
+		if !results[index].HasContentScore {
+			results[index].ContentScore = results[index].Score
+			results[index].HasContentScore = true
+		}
+		if !results[index].HasPreRerankScore {
+			results[index].PreRerankScore = results[index].Score
+			results[index].HasPreRerankScore = true
+		}
+	}
 }
 
 func normalizeRequest(request Request) (Request, error) {
@@ -401,16 +475,16 @@ func normalizeFileType(fileType string) string {
 	return trimmed
 }
 
-func (s *Service) searchScope(ctx context.Context, scope queryScope, request Request, tagState *queryTagState) (index.Snapshot, []float32, []domain.SearchResult, error) {
+func (s *Service) searchScope(ctx context.Context, scope queryScope, request Request, tagState *queryTagState) (index.Snapshot, []float32, []domain.SearchResult, bool, error) {
 	snapshot, err := s.deps.LoadIndex(scope.StorageRoot)
 	if err != nil {
 		switch {
 		case errors.Is(err, index.ErrStateNotFound):
-			return index.Snapshot{}, nil, nil, fmt.Errorf("query: .vectordb manifests are missing under %s", filepath.Join(scope.StorageRoot, index.DirectoryName))
+			return index.Snapshot{}, nil, nil, false, fmt.Errorf("query: .vectordb manifests are missing under %s", filepath.Join(scope.StorageRoot, index.DirectoryName))
 		case errors.Is(err, index.ErrRebuildRequired):
-			return index.Snapshot{}, nil, nil, fmt.Errorf("query: .vectordb manifests are invalid: %w", err)
+			return index.Snapshot{}, nil, nil, false, fmt.Errorf("query: .vectordb manifests are invalid: %w", err)
 		default:
-			return index.Snapshot{}, nil, nil, err
+			return index.Snapshot{}, nil, nil, false, err
 		}
 	}
 	snapshot.Config.RootDir = scope.RootDir
@@ -422,29 +496,29 @@ func (s *Service) searchScope(ctx context.Context, scope queryScope, request Req
 		snapshot.Config.FileType = defaultFileType
 	}
 	if err := validateManifest(snapshot.Config); err != nil {
-		return index.Snapshot{}, nil, nil, err
+		return index.Snapshot{}, nil, nil, false, err
 	}
 
 	queryVector, err := s.embedQuery(ctx, snapshot.Config, request)
 	if err != nil {
-		return index.Snapshot{}, nil, nil, err
+		return index.Snapshot{}, nil, nil, false, err
 	}
 
 	queryTagVector, useTagFusion, err := s.resolveScopeQueryTagVector(ctx, snapshot.Config, request, tagState)
 	if err != nil {
-		return index.Snapshot{}, nil, nil, err
+		return index.Snapshot{}, nil, nil, false, err
 	}
 
 	factory, err := s.deps.GetVectorStore(s.deps.VectorStore)
 	if err != nil {
-		return index.Snapshot{}, nil, nil, err
+		return index.Snapshot{}, nil, nil, false, err
 	}
 
 	storeConfig := snapshot.Config
 	storeConfig.Namespace = s.deps.VectorStore
 	store, err := factory(storeConfig)
 	if err != nil {
-		return index.Snapshot{}, nil, nil, err
+		return index.Snapshot{}, nil, nil, false, err
 	}
 	defer func() { _ = store.Close() }()
 
@@ -464,11 +538,11 @@ func (s *Service) searchScope(ctx context.Context, scope queryScope, request Req
 	})
 	if err != nil {
 		if errors.Is(err, lancedb.ErrVectorDBNotFound) {
-			return index.Snapshot{}, nil, nil, fmt.Errorf("query: .vectordb storage is not initialized under %s", filepath.Join(scope.StorageRoot, index.DirectoryName))
+			return index.Snapshot{}, nil, nil, false, fmt.Errorf("query: .vectordb storage is not initialized under %s", filepath.Join(scope.StorageRoot, index.DirectoryName))
 		}
-		return index.Snapshot{}, nil, nil, err
+		return index.Snapshot{}, nil, nil, false, err
 	}
-	return snapshot, queryVector, results, nil
+	return snapshot, queryVector, results, useTagFusion, nil
 }
 
 func (s *Service) resolveQueryScopes(inputPath string, dataDir string, fileType string) ([]queryScope, error) {
@@ -619,11 +693,14 @@ func combinedManifest(manifests []domain.StoreConfig) domain.StoreConfig {
 	return combined
 }
 
-func selectFinalResults(queryVectors [][]float32, manifests []domain.StoreConfig, results []domain.SearchResult, limit int, lambda float64) []domain.SearchResult {
+func selectFinalResults(queryVectors [][]float32, manifests []domain.StoreConfig, results []domain.SearchResult, limit int, lambda float64) ([]domain.SearchResult, string) {
 	if len(queryVectors) == 0 || !compatibleManifestsForMMR(manifests) {
-		return truncateAndRerank(results, limit)
+		return truncateAndRerank(results, limit), "truncate"
 	}
-	return mmrSelect(queryVectors[0], results, limit, lambda)
+	if lambda >= 1.0 || len(results) <= 1 || limit <= 0 {
+		return mmrSelect(queryVectors[0], results, limit, lambda), "truncate"
+	}
+	return mmrSelect(queryVectors[0], results, limit, lambda), "mmr"
 }
 
 func compatibleManifestsForMMR(manifests []domain.StoreConfig) bool {
