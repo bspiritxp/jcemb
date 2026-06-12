@@ -197,6 +197,115 @@ func TestRunCollectionDeleteRequiresID(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestRunCollectionPruneDeletesUnreadableAndVarFoldersCollectionsWithForce(t *testing.T) {
+	dataDir := t.TempDir()
+	healthy := testCollectionEntry("/Users/u/notes", "markdown")
+	broken := testCollectionEntry("/Users/u/broken", "markdown")
+	tempCollection := testCollectionEntry("/var/folders/zz/jcemb-test", "markdown")
+	registry := index.CollectionRegistry{
+		Version:     index.SchemaVersionV1,
+		Collections: []index.CollectionEntry{healthy, broken, tempCollection},
+	}
+
+	var deletedIDs []string
+	var removedPaths []string
+	result, err := RunCollectionPrune(CollectionPruneRequest{
+		DataDir: dataDir,
+		Force:   true,
+		LoadRegistry: func(string) (index.CollectionRegistry, error) {
+			return registry, nil
+		},
+		LoadSnapshot: func(storageRoot string) (index.Snapshot, error) {
+			switch {
+			case strings.Contains(storageRoot, healthy.CollectionID), strings.Contains(storageRoot, tempCollection.CollectionID):
+				return index.Snapshot{}, nil
+			default:
+				return index.Snapshot{}, errors.New("snapshot unreadable")
+			}
+		},
+		DeleteEntry: func(_ string, id string) (index.CollectionEntry, error) {
+			deletedIDs = append(deletedIDs, id)
+			for _, entry := range registry.Collections {
+				if entry.CollectionID == id {
+					return entry, nil
+				}
+			}
+			return index.CollectionEntry{}, index.ErrCollectionNotFound
+		},
+		RemoveAll: func(path string) error {
+			removedPaths = append(removedPaths, path)
+			return nil
+		},
+		Confirm: func(*bufio.Reader, io.Writer, string) (bool, error) {
+			t.Fatal("Confirm must not be called when force is true")
+			return false, nil
+		},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, []string{broken.CollectionID, tempCollection.CollectionID}, deletedIDs)
+	require.Len(t, removedPaths, 2)
+	require.Len(t, result.Pruned, 2)
+	require.Equal(t, "unreadable", result.Pruned[0].Reason)
+	require.Equal(t, "temporary", result.Pruned[1].Reason)
+	require.Equal(t, 1, result.KeptCount)
+}
+
+func TestRunCollectionPruneReturnsAbortedWhenConfirmationDeclines(t *testing.T) {
+	entry := testCollectionEntry("/var/folders/zz/jcemb-test", "markdown")
+
+	_, err := RunCollectionPrune(CollectionPruneRequest{
+		DataDir: t.TempDir(),
+		Force:   false,
+		In:      strings.NewReader("n\n"),
+		Out:     io.Discard,
+		LoadRegistry: func(string) (index.CollectionRegistry, error) {
+			return index.CollectionRegistry{Version: index.SchemaVersionV1, Collections: []index.CollectionEntry{entry}}, nil
+		},
+		LoadSnapshot: func(string) (index.Snapshot, error) {
+			return index.Snapshot{}, nil
+		},
+		Confirm: func(*bufio.Reader, io.Writer, string) (bool, error) {
+			return false, nil
+		},
+		DeleteEntry: func(string, string) (index.CollectionEntry, error) {
+			t.Fatal("DeleteEntry must not be called when prune is declined")
+			return index.CollectionEntry{}, nil
+		},
+		RemoveAll: func(string) error {
+			t.Fatal("RemoveAll must not be called when prune is declined")
+			return nil
+		},
+	})
+
+	require.ErrorIs(t, err, ErrCollectionDeleteAborted)
+}
+
+func TestRunCollectionPruneDoesNotDeleteRegistryEntryWhenStorageRemovalFails(t *testing.T) {
+	entry := testCollectionEntry("/var/folders/zz/jcemb-test", "markdown")
+
+	_, err := RunCollectionPrune(CollectionPruneRequest{
+		DataDir: t.TempDir(),
+		Force:   true,
+		LoadRegistry: func(string) (index.CollectionRegistry, error) {
+			return index.CollectionRegistry{Version: index.SchemaVersionV1, Collections: []index.CollectionEntry{entry}}, nil
+		},
+		LoadSnapshot: func(string) (index.Snapshot, error) {
+			return index.Snapshot{}, nil
+		},
+		RemoveAll: func(string) error {
+			return errors.New("permission denied")
+		},
+		DeleteEntry: func(string, string) (index.CollectionEntry, error) {
+			t.Fatal("DeleteEntry must not be called when storage removal fails")
+			return index.CollectionEntry{}, nil
+		},
+	})
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "permission denied")
+}
+
 func TestPromptConfirmAcceptsYAndDefaultsToNo(t *testing.T) {
 	t.Run("default no on empty", func(t *testing.T) {
 		ok, err := promptConfirm(bufio.NewReader(strings.NewReader("\n")), io.Discard, "ok?")
@@ -215,4 +324,14 @@ func TestPromptConfirmAcceptsYAndDefaultsToNo(t *testing.T) {
 		require.False(t, ok)
 		require.Contains(t, out.String(), "Please answer 'y' or 'n'")
 	})
+}
+
+func testCollectionEntry(rootIdentity string, fileType string) index.CollectionEntry {
+	return index.CollectionEntry{
+		CollectionID: index.CollectionIDForRootAndFileType(rootIdentity, fileType),
+		RootIdentity: rootIdentity,
+		RootDir:      rootIdentity,
+		FileType:     fileType,
+		UpdatedAt:    time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC),
+	}
 }

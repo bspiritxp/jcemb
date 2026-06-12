@@ -11,12 +11,13 @@ import (
 
 type collectionListRunner func(app.CollectionListRequest) (app.CollectionListResult, error)
 type collectionDeleteRunner func(app.CollectionDeleteRequest) (app.CollectionDeleteResult, error)
+type collectionPruneRunner func(app.CollectionPruneRequest) (app.CollectionPruneResult, error)
 
 func NewCollectionCmd() *cobra.Command {
-	return newCollectionCmd(app.NewBootstrap(), app.RunCollectionList, app.RunCollectionDelete)
+	return newCollectionCmd(app.NewBootstrap(), app.RunCollectionList, app.RunCollectionDelete, app.RunCollectionPrune)
 }
 
-func newCollectionCmd(bootstrap app.Bootstrap, listRunner collectionListRunner, deleteRunner collectionDeleteRunner) *cobra.Command {
+func newCollectionCmd(bootstrap app.Bootstrap, listRunner collectionListRunner, deleteRunner collectionDeleteRunner, pruneRunner collectionPruneRunner) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "collection",
 		Short: "Manage indexed collections",
@@ -26,6 +27,7 @@ func newCollectionCmd(bootstrap app.Bootstrap, listRunner collectionListRunner, 
 	cmd.AddCommand(
 		newCollectionListCmd(bootstrap, listRunner),
 		newCollectionDelCmd(bootstrap, deleteRunner),
+		newCollectionPruneCmd(bootstrap, pruneRunner),
 	)
 
 	return cmd
@@ -109,5 +111,45 @@ func newCollectionDelCmd(bootstrap app.Bootstrap, runner collectionDeleteRunner)
 		},
 	}
 	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "Skip confirmation prompt")
+	return cmd
+}
+
+func newCollectionPruneCmd(bootstrap app.Bootstrap, runner collectionPruneRunner) *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "prune",
+		Short: "Prune unreadable, problematic, and temporary test collections",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := bootstrap.Validate(); err != nil {
+				return err
+			}
+
+			result, err := runner(app.CollectionPruneRequest{
+				DataDir: bootstrap.Config.Settings.DataDir,
+				Force:   force,
+				In:      cmd.InOrStdin(),
+				Out:     cmd.OutOrStdout(),
+			})
+			if err != nil {
+				if errors.Is(err, app.ErrCollectionDeleteAborted) {
+					_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Aborted.")
+					return nil
+				}
+				return err
+			}
+
+			if len(result.Pruned) == 0 {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "No collections to prune.")
+				return nil
+			}
+			for _, pruned := range result.Pruned {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Pruned collection %s (%s) - %s\n", pruned.Entry.CollectionID, pruned.Entry.RootDir, pruned.Reason)
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Pruned %d collection(s). Kept %d.\n", len(result.Pruned), result.KeptCount)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "Skip confirmation prompt")
 	return cmd
 }

@@ -16,7 +16,7 @@ import (
 )
 
 var (
-	ErrCollectionAmbiguousID = errors.New("collection: ambiguous id prefix")
+	ErrCollectionAmbiguousID   = errors.New("collection: ambiguous id prefix")
 	ErrCollectionDeleteAborted = errors.New("collection: deletion aborted by user")
 )
 
@@ -35,9 +35,9 @@ type CollectionInfo struct {
 }
 
 type CollectionListRequest struct {
-	DataDir         string
-	LoadRegistry    func(dataRoot string) (index.CollectionRegistry, error)
-	LoadSnapshot    func(storageRoot string) (index.Snapshot, error)
+	DataDir      string
+	LoadRegistry func(dataRoot string) (index.CollectionRegistry, error)
+	LoadSnapshot func(storageRoot string) (index.Snapshot, error)
 }
 
 type CollectionListResult struct {
@@ -46,20 +46,45 @@ type CollectionListResult struct {
 }
 
 type CollectionDeleteRequest struct {
-	DataDir       string
-	IDOrPrefix    string
-	AssumeYes     bool
-	In            io.Reader
-	Out           io.Writer
-	LoadRegistry  func(dataRoot string) (index.CollectionRegistry, error)
-	DeleteEntry   func(dataRoot string, collectionID string) (index.CollectionEntry, error)
-	RemoveAll     func(path string) error
-	Confirm       func(reader *bufio.Reader, writer io.Writer, label string) (bool, error)
+	DataDir      string
+	IDOrPrefix   string
+	AssumeYes    bool
+	In           io.Reader
+	Out          io.Writer
+	LoadRegistry func(dataRoot string) (index.CollectionRegistry, error)
+	DeleteEntry  func(dataRoot string, collectionID string) (index.CollectionEntry, error)
+	RemoveAll    func(path string) error
+	Confirm      func(reader *bufio.Reader, writer io.Writer, label string) (bool, error)
+}
+
+type CollectionPruneRequest struct {
+	DataDir      string
+	Force        bool
+	In           io.Reader
+	Out          io.Writer
+	LoadRegistry func(dataRoot string) (index.CollectionRegistry, error)
+	LoadSnapshot func(storageRoot string) (index.Snapshot, error)
+	DeleteEntry  func(dataRoot string, collectionID string) (index.CollectionEntry, error)
+	RemoveAll    func(path string) error
+	Confirm      func(reader *bufio.Reader, writer io.Writer, label string) (bool, error)
 }
 
 type CollectionDeleteResult struct {
 	Deleted     index.CollectionEntry
 	StorageRoot string
+}
+
+type CollectionPruned struct {
+	Entry       index.CollectionEntry
+	StorageRoot string
+	Reason      string
+	LoadError   error
+}
+
+type CollectionPruneResult struct {
+	DataDir   string
+	Pruned    []CollectionPruned
+	KeptCount int
 }
 
 func RunCollectionList(request CollectionListRequest) (CollectionListResult, error) {
@@ -180,6 +205,110 @@ func RunCollectionDelete(request CollectionDeleteRequest) (CollectionDeleteResul
 	}
 
 	return CollectionDeleteResult{Deleted: deleted, StorageRoot: storageRoot}, nil
+}
+
+func RunCollectionPrune(request CollectionPruneRequest) (CollectionPruneResult, error) {
+	if request.LoadRegistry == nil {
+		request.LoadRegistry = index.LoadCollectionRegistry
+	}
+	if request.LoadSnapshot == nil {
+		request.LoadSnapshot = index.Load
+	}
+	if request.DeleteEntry == nil {
+		request.DeleteEntry = index.DeleteCollection
+	}
+	if request.RemoveAll == nil {
+		request.RemoveAll = os.RemoveAll
+	}
+	if request.Confirm == nil {
+		request.Confirm = promptConfirm
+	}
+	if request.Out == nil {
+		request.Out = io.Discard
+	}
+	if request.In == nil {
+		request.In = os.Stdin
+	}
+
+	dataDir, err := resolveDataDir(request.DataDir)
+	if err != nil {
+		return CollectionPruneResult{}, err
+	}
+
+	registry, err := request.LoadRegistry(dataDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return CollectionPruneResult{DataDir: dataDir}, nil
+		}
+		return CollectionPruneResult{}, err
+	}
+
+	candidates := make([]CollectionPruned, 0)
+	keptCount := 0
+	for _, entry := range registry.Collections {
+		storageRoot := jcpaths.CollectionStorageDir(dataDir, entry.CollectionID)
+		if isTemporaryVarFoldersCollection(entry) {
+			candidates = append(candidates, CollectionPruned{
+				Entry:       entry,
+				StorageRoot: storageRoot,
+				Reason:      "temporary",
+			})
+			continue
+		}
+		if _, err := request.LoadSnapshot(storageRoot); err != nil {
+			candidates = append(candidates, CollectionPruned{
+				Entry:       entry,
+				StorageRoot: storageRoot,
+				Reason:      "unreadable",
+				LoadError:   err,
+			})
+			continue
+		}
+		keptCount++
+	}
+
+	result := CollectionPruneResult{DataDir: dataDir, KeptCount: keptCount}
+	if len(candidates) == 0 {
+		return result, nil
+	}
+
+	if !request.Force {
+		_, _ = fmt.Fprintf(request.Out, "About to prune %d collection(s):\n", len(candidates))
+		for _, candidate := range candidates {
+			_, _ = fmt.Fprintf(request.Out, "  %s  %s  %s\n", candidate.Entry.CollectionID, candidate.Entry.RootDir, candidate.Reason)
+		}
+		reader := bufio.NewReader(request.In)
+		ok, confirmErr := request.Confirm(reader, request.Out, "Proceed with prune?")
+		if confirmErr != nil {
+			return CollectionPruneResult{}, confirmErr
+		}
+		if !ok {
+			return CollectionPruneResult{}, ErrCollectionDeleteAborted
+		}
+	}
+
+	for _, candidate := range candidates {
+		if err := request.RemoveAll(candidate.StorageRoot); err != nil {
+			return result, fmt.Errorf("collection: remove storage %s: %w", candidate.StorageRoot, err)
+		}
+		deleted, err := request.DeleteEntry(dataDir, candidate.Entry.CollectionID)
+		if err != nil {
+			return result, err
+		}
+		candidate.Entry = deleted
+		result.Pruned = append(result.Pruned, candidate)
+	}
+
+	return result, nil
+}
+
+func isTemporaryVarFoldersCollection(entry index.CollectionEntry) bool {
+	return hasVarFoldersPrefix(entry.RootDir) || hasVarFoldersPrefix(entry.RootIdentity)
+}
+
+func hasVarFoldersPrefix(value string) bool {
+	normalized := jcpaths.NormalizeStoredPath(value)
+	return normalized == "/var/folders" || strings.HasPrefix(normalized, "/var/folders/")
 }
 
 func matchCollectionByPrefix(entries []index.CollectionEntry, prefix string) (index.CollectionEntry, error) {

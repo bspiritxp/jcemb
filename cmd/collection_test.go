@@ -19,7 +19,7 @@ func TestNewCollectionCmd(t *testing.T) {
 	cmd := NewCollectionCmd()
 	require.NotNil(t, cmd)
 	require.Equal(t, "collection", cmd.Use)
-	require.Len(t, cmd.Commands(), 2)
+	require.Len(t, cmd.Commands(), 3)
 }
 
 func TestCollectionListCommandDelegatesToRunner(t *testing.T) {
@@ -51,8 +51,12 @@ func TestCollectionListCommandDelegatesToRunner(t *testing.T) {
 		t.Fatal("delete runner must not be called for list")
 		return app.CollectionDeleteResult{}, nil
 	}
+	pruneRunner := func(app.CollectionPruneRequest) (app.CollectionPruneResult, error) {
+		t.Fatal("prune runner must not be called for list")
+		return app.CollectionPruneResult{}, nil
+	}
 
-	cmd := newCollectionCmd(bootstrap, listRunner, deleteRunner)
+	cmd := newCollectionCmd(bootstrap, listRunner, deleteRunner, pruneRunner)
 	buf := &bytes.Buffer{}
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
@@ -101,8 +105,11 @@ func TestCollectionListCommandRendersJSON(t *testing.T) {
 	deleteRunner := func(app.CollectionDeleteRequest) (app.CollectionDeleteResult, error) {
 		return app.CollectionDeleteResult{}, nil
 	}
+	pruneRunner := func(app.CollectionPruneRequest) (app.CollectionPruneResult, error) {
+		return app.CollectionPruneResult{}, nil
+	}
 
-	cmd := newCollectionCmd(bootstrap, listRunner, deleteRunner)
+	cmd := newCollectionCmd(bootstrap, listRunner, deleteRunner, pruneRunner)
 	buf := &bytes.Buffer{}
 	cmd.SetOut(buf)
 	cmd.SetArgs([]string{"list", "--json"})
@@ -140,7 +147,10 @@ func TestCollectionListCommandShowsEmptyHint(t *testing.T) {
 	deleteRunner := func(app.CollectionDeleteRequest) (app.CollectionDeleteResult, error) {
 		return app.CollectionDeleteResult{}, nil
 	}
-	cmd := newCollectionCmd(bootstrap, listRunner, deleteRunner)
+	pruneRunner := func(app.CollectionPruneRequest) (app.CollectionPruneResult, error) {
+		return app.CollectionPruneResult{}, nil
+	}
+	cmd := newCollectionCmd(bootstrap, listRunner, deleteRunner, pruneRunner)
 	buf := &bytes.Buffer{}
 	cmd.SetOut(buf)
 	cmd.SetArgs([]string{"list"})
@@ -151,14 +161,20 @@ func TestCollectionListCommandShowsEmptyHint(t *testing.T) {
 func TestCollectionDelCommandPassesYesAndID(t *testing.T) {
 	bootstrap := app.Bootstrap{Config: config.RuntimeConfig{Settings: config.Settings{DataDir: "/tmp/data"}}}
 	captured := app.CollectionDeleteRequest{}
-	listRunner := func(app.CollectionListRequest) (app.CollectionListResult, error) { return app.CollectionListResult{}, nil }
+	listRunner := func(app.CollectionListRequest) (app.CollectionListResult, error) {
+		return app.CollectionListResult{}, nil
+	}
 	deleteRunner := func(req app.CollectionDeleteRequest) (app.CollectionDeleteResult, error) {
 		captured = req
 		return app.CollectionDeleteResult{
 			Deleted: index.CollectionEntry{CollectionID: "abc1234567890000xyz", RootDir: "/u/notes"},
 		}, nil
 	}
-	cmd := newCollectionCmd(bootstrap, listRunner, deleteRunner)
+	pruneRunner := func(app.CollectionPruneRequest) (app.CollectionPruneResult, error) {
+		t.Fatal("prune runner must not be called for del")
+		return app.CollectionPruneResult{}, nil
+	}
+	cmd := newCollectionCmd(bootstrap, listRunner, deleteRunner, pruneRunner)
 	buf := &bytes.Buffer{}
 	cmd.SetOut(buf)
 	cmd.SetArgs([]string{"del", "abc", "--yes"})
@@ -172,11 +188,16 @@ func TestCollectionDelCommandPassesYesAndID(t *testing.T) {
 
 func TestCollectionDelCommandReportsAbortGracefully(t *testing.T) {
 	bootstrap := app.Bootstrap{Config: config.RuntimeConfig{Settings: config.Settings{DataDir: "/tmp/data"}}}
-	listRunner := func(app.CollectionListRequest) (app.CollectionListResult, error) { return app.CollectionListResult{}, nil }
+	listRunner := func(app.CollectionListRequest) (app.CollectionListResult, error) {
+		return app.CollectionListResult{}, nil
+	}
 	deleteRunner := func(app.CollectionDeleteRequest) (app.CollectionDeleteResult, error) {
 		return app.CollectionDeleteResult{}, app.ErrCollectionDeleteAborted
 	}
-	cmd := newCollectionCmd(bootstrap, listRunner, deleteRunner)
+	pruneRunner := func(app.CollectionPruneRequest) (app.CollectionPruneResult, error) {
+		return app.CollectionPruneResult{}, nil
+	}
+	cmd := newCollectionCmd(bootstrap, listRunner, deleteRunner, pruneRunner)
 	buf := &bytes.Buffer{}
 	cmd.SetOut(buf)
 	cmd.SetArgs([]string{"del", "abc"})
@@ -186,15 +207,54 @@ func TestCollectionDelCommandReportsAbortGracefully(t *testing.T) {
 
 func TestCollectionDelCommandPropagatesOtherErrors(t *testing.T) {
 	bootstrap := app.Bootstrap{Config: config.RuntimeConfig{Settings: config.Settings{DataDir: "/tmp/data"}}}
-	listRunner := func(app.CollectionListRequest) (app.CollectionListResult, error) { return app.CollectionListResult{}, nil }
+	listRunner := func(app.CollectionListRequest) (app.CollectionListResult, error) {
+		return app.CollectionListResult{}, nil
+	}
 	deleteRunner := func(app.CollectionDeleteRequest) (app.CollectionDeleteResult, error) {
 		return app.CollectionDeleteResult{}, errors.New("disk full")
 	}
-	cmd := newCollectionCmd(bootstrap, listRunner, deleteRunner)
+	pruneRunner := func(app.CollectionPruneRequest) (app.CollectionPruneResult, error) {
+		return app.CollectionPruneResult{}, nil
+	}
+	cmd := newCollectionCmd(bootstrap, listRunner, deleteRunner, pruneRunner)
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"del", "abc", "--yes"})
 	require.Error(t, cmd.Execute())
+}
+
+func TestCollectionPruneCommandPassesForce(t *testing.T) {
+	bootstrap := app.Bootstrap{Config: config.RuntimeConfig{Settings: config.Settings{DataDir: "/tmp/data"}}}
+	var captured app.CollectionPruneRequest
+	listRunner := func(app.CollectionListRequest) (app.CollectionListResult, error) {
+		return app.CollectionListResult{}, nil
+	}
+	deleteRunner := func(app.CollectionDeleteRequest) (app.CollectionDeleteResult, error) {
+		t.Fatal("delete runner must not be called for prune")
+		return app.CollectionDeleteResult{}, nil
+	}
+	pruneRunner := func(req app.CollectionPruneRequest) (app.CollectionPruneResult, error) {
+		captured = req
+		return app.CollectionPruneResult{
+			DataDir: "/tmp/data",
+			Pruned: []app.CollectionPruned{
+				{Entry: index.CollectionEntry{CollectionID: "abc1234567890000xyz", RootDir: "/bad"}, Reason: "unreadable"},
+			},
+			KeptCount: 2,
+		}, nil
+	}
+
+	cmd := newCollectionCmd(bootstrap, listRunner, deleteRunner, pruneRunner)
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"prune", "-f"})
+	require.NoError(t, cmd.Execute())
+
+	require.True(t, captured.Force)
+	require.Equal(t, "/tmp/data", captured.DataDir)
+	require.Contains(t, buf.String(), "Pruned 1 collection")
+	require.Contains(t, buf.String(), "abc1234567890000xyz")
+	require.Contains(t, buf.String(), "unreadable")
 }
 
 func TestCollectionCommandHonorsBootstrapValidationError(t *testing.T) {
@@ -207,6 +267,10 @@ func TestCollectionCommandHonorsBootstrapValidationError(t *testing.T) {
 		func(app.CollectionDeleteRequest) (app.CollectionDeleteResult, error) {
 			t.Fatal("delete runner must not be called")
 			return app.CollectionDeleteResult{}, nil
+		},
+		func(app.CollectionPruneRequest) (app.CollectionPruneResult, error) {
+			t.Fatal("prune runner must not be called")
+			return app.CollectionPruneResult{}, nil
 		},
 	)
 	cmd.SetOut(io.Discard)

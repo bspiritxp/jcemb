@@ -20,7 +20,7 @@ func NewRootCmd() *cobra.Command {
 		newShowCmd(bootstrap),
 		newConfigCmd(bootstrap, app.RunConfigCommand),
 		newDoctorCmd(bootstrap, app.RunDoctorCommand),
-		newCollectionCmd(bootstrap, app.RunCollectionList, app.RunCollectionDelete),
+		newCollectionCmd(bootstrap, app.RunCollectionList, app.RunCollectionDelete, app.RunCollectionPrune),
 		NewVersionCmd(),
 	)
 
