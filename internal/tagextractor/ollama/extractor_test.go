@@ -3,7 +3,6 @@ package ollama
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -136,5 +135,5 @@ func defaultRequestConfig() domain.TagExtractorConfig {
 
 func TestDecodeAPIErrorFallback(t *testing.T) {
 	require.Equal(t, "plain text", decodeAPIError([]byte("plain text")))
-	require.Equal(t, fmt.Sprintf("%s", http.StatusText(http.StatusInternalServerError)), decodeAPIError(nil))
+	require.Equal(t, http.StatusText(http.StatusInternalServerError), decodeAPIError(nil))
 }

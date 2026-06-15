@@ -473,13 +473,13 @@ func isZeroSettings(settings config.Settings) bool {
 		settings.Ollama == (config.OllamaConfig{}) &&
 		settings.OpenAI == (config.OpenAIConfig{}) &&
 		settings.Image == (config.ImageConfig{}) &&
-		settings.TagExtractor.Enabled == false &&
+		!settings.TagExtractor.Enabled &&
 		strings.TrimSpace(settings.TagExtractor.Provider) == "" &&
 		strings.TrimSpace(settings.TagExtractor.Model) == "" &&
 		settings.TagExtractor.MaxTags == 0 &&
 		settings.TagExtractor.MinTagLen == 0 &&
 		settings.TagExtractor.MaxTagLen == 0 &&
-		settings.TagExtractor.SkipIfHasYAML == false &&
+		!settings.TagExtractor.SkipIfHasYAML &&
 		settings.TagExtractor.Timeout == 0 &&
 		len(settings.TagExtractor.Options) == 0
 }
