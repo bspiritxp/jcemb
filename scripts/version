@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  scripts/version get
+  scripts/version set <version>
+USAGE
+}
+
+root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+manifest_path="${root_dir}/manifest.json"
+
+command="${1:-}"
+case "${command}" in
+  get)
+    python3 - "$manifest_path" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    manifest = json.load(f)
+print(manifest["version"])
+PY
+    ;;
+  set)
+    version="${2:-}"
+    if [[ -z "${version}" ]]; then
+      usage >&2
+      exit 2
+    fi
+    python3 - "$manifest_path" "$version" <<'PY'
+import json
+import sys
+
+path, version = sys.argv[1], sys.argv[2]
+with open(path, "r", encoding="utf-8") as f:
+    manifest = json.load(f)
+manifest["version"] = version
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(manifest, f, indent=2)
+    f.write("\n")
+PY
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

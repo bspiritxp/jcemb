@@ -1,0 +1,6 @@
+{
+  "name": "jcemb",
+  "description": "Local-first Go CLI for embedding documents and images into a local vector index and querying them with semantic search.",
+  "author": "bspiritxp",
+  "version": "1.0.1"
+}
