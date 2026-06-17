@@ -1,24 +1,49 @@
+[tasks."build-macos-amd64"]
+description = "Build macOS amd64 binary"
+env = { GOOS = "darwin", GOARCH = "amd64" }
+run = "go build -o dist/jcemb-darwin-amd64 ."
+
+[tasks."build-macos-arm64"]
+description = "Build macOS arm64 binary"
+env = { GOOS = "darwin", GOARCH = "arm64" }
+run = "go build -o dist/jcemb-darwin-arm64 ."
+
 [tasks.build-macos]
 description = "Build macOS binaries (amd64 & arm64)"
-run = [
-  "GOOS=darwin GOARCH=amd64 go build -o dist/jcemb-darwin-amd64 .",
-  "GOOS=darwin GOARCH=arm64 go build -o dist/jcemb-darwin-arm64 .",
-]
+depends = ["build-macos-amd64", "build-macos-arm64"]
+
+[tasks."build-linux-amd64"]
+description = "Build Linux amd64 binary"
+env = { GOOS = "linux", GOARCH = "amd64" }
+run = "go build -o dist/jcemb-linux-amd64 ."
+
+[tasks."build-linux-arm64"]
+description = "Build Linux arm64 binary"
+env = { GOOS = "linux", GOARCH = "arm64" }
+run = "go build -o dist/jcemb-linux-arm64 ."
 
 [tasks.build-linux]
 description = "Build Linux binaries (amd64 & arm64)"
-run = [
-  "GOOS=linux GOARCH=amd64 go build -o dist/jcemb-linux-amd64 .",
-  "GOOS=linux GOARCH=arm64 go build -o dist/jcemb-linux-arm64 .",
-]
+depends = ["build-linux-amd64", "build-linux-arm64"]
+
+[tasks."build-windows-amd64"]
+description = "Build Windows amd64 binary"
+env = { GOOS = "windows", GOARCH = "amd64" }
+run = "go build -o dist/jcemb-windows-amd64.exe ."
+
+[tasks."build-windows-arm64"]
+description = "Build Windows arm64 binary"
+env = { GOOS = "windows", GOARCH = "arm64" }
+run = "go build -o dist/jcemb-windows-arm64.exe ."
 
 [tasks.build-windows]
 description = "Build Windows binaries (amd64 & arm64)"
-run = [
-  "GOOS=windows GOARCH=amd64 go build -o dist/jcemb-windows-amd64.exe .",
-  "GOOS=windows GOARCH=arm64 go build -o dist/jcemb-windows-arm64.exe .",
-]
+depends = ["build-windows-amd64", "build-windows-arm64"]
 
 [tasks.build-all]
 description = "Build all platform binaries"
 depends = ["build-macos", "build-linux", "build-windows"]
+
+[tasks.build-host]
+description = "Build for the current platform"
+run = "go build -o jcemb ."
