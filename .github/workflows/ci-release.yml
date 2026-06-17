@@ -84,10 +84,11 @@ jobs:
           package_name="jcemb_${VERSION}_${GOOS}_${GOARCH}"
           package_dir="dist/${package_name}"
           version="${VERSION#v}"
+          ./scripts/version set "${version}"
           mkdir -p "${package_dir}"
 
           CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
-            go build -trimpath -ldflags="-s -w -X github.com/bspiritxp/jcemb/cmd.version=${version}" -o "${package_dir}/${binary_name}" .
+            go build -trimpath -ldflags="-s -w" -o "${package_dir}/${binary_name}" .
 
           cp README.md LICENSE "${package_dir}/"
 

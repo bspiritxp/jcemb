@@ -8,6 +8,10 @@ import (
 )
 
 func TestVersionCommandPrintsVersion(t *testing.T) {
+	manifest, loadErr := LoadManifest()
+	require.NoError(t, loadErr)
+	require.NotEmpty(t, manifest.Version)
+
 	cmd := NewRootCmd()
 	buf := &bytes.Buffer{}
 	cmd.SetOut(buf)
@@ -16,16 +20,21 @@ func TestVersionCommandPrintsVersion(t *testing.T) {
 
 	err := cmd.Execute()
 	require.NoError(t, err)
-	require.Equal(t, "1.0.0\n", buf.String())
+	require.Equal(t, manifest.Version+"\n", buf.String())
 }
 
-func TestVersionCommandCanBeOverriddenAtBuildTime(t *testing.T) {
-	previous := version
+func TestVersionCommandUsesInjectedManifest(t *testing.T) {
+	previous := embeddedManifest
 	t.Cleanup(func() {
-		version = previous
+		embeddedManifest = previous
 	})
 
-	version = "1.2.3"
+	SetManifest([]byte(`{
+		"name": "jcemb-test",
+		"description": "test manifest",
+		"author": "test",
+		"version": "9.8.7"
+	}`))
 
 	cmd := NewRootCmd()
 	buf := &bytes.Buffer{}
@@ -35,5 +44,5 @@ func TestVersionCommandCanBeOverriddenAtBuildTime(t *testing.T) {
 
 	err := cmd.Execute()
 	require.NoError(t, err)
-	require.Equal(t, "1.2.3\n", buf.String())
+	require.Equal(t, "9.8.7\n", buf.String())
 }
