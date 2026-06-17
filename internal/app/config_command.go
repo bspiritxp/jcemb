@@ -203,6 +203,39 @@ func RunConfigCommand(request ConfigCommandRequest) (ConfigCommandResult, error)
 		model = strings.TrimSpace(model)
 	}
 
+	_, _ = fmt.Fprintln(writer)
+	_, _ = fmt.Fprintln(writer, "Tag extraction:")
+
+	tagExtractorProvider := provider
+	tagExtractorModelOptions, tagExtractorModelDefault := buildTagExtractorModelOptions(tagExtractorProvider, current.TagExtractor.Model)
+	tagExtractorModel, err := request.Select(ConfigSelectRequest{
+		In:           request.In,
+		Reader:       reader,
+		Out:          writer,
+		Label:        "Tag extraction model",
+		Options:      tagExtractorModelOptions,
+		DefaultValue: tagExtractorModelDefault,
+	})
+	if err != nil {
+		return ConfigCommandResult{}, err
+	}
+	if tagExtractorModel == CustomModelOptionLabel {
+		customDefault := strings.TrimSpace(current.TagExtractor.Model)
+		if customDefault == "" || isStandardTagExtractorModel(tagExtractorProvider, customDefault) {
+			customDefault = ""
+		}
+		tagExtractorModel, err = promptLine(reader, writer, "Custom tag extraction model name", customDefault, func(value string) error {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("custom tag extraction model name is required")
+			}
+			return nil
+		})
+		if err != nil {
+			return ConfigCommandResult{}, err
+		}
+		tagExtractorModel = strings.TrimSpace(tagExtractorModel)
+	}
+
 	vectorDimValue, err := promptLine(reader, writer, "Vector dimension", strconv.Itoa(current.VectorDim), func(value string) error {
 		parsed, parseErr := strconv.Atoi(strings.TrimSpace(value))
 		if parseErr != nil || parsed <= 0 {
@@ -261,8 +294,8 @@ func RunConfigCommand(request ConfigCommandRequest) (ConfigCommandResult, error)
 		},
 		TagExtractor: config.PersistedTagExtractorConfig{
 			Enabled:       current.TagExtractor.Enabled,
-			Provider:      current.TagExtractor.Provider,
-			Model:         current.TagExtractor.Model,
+			Provider:      tagExtractorProvider,
+			Model:         tagExtractorModel,
 			MaxTags:       current.TagExtractor.MaxTags,
 			MinTagLen:     current.TagExtractor.MinTagLen,
 			MaxTagLen:     current.TagExtractor.MaxTagLen,
@@ -385,6 +418,15 @@ func applyConfigUpdates(current config.Settings, updates ConfigUpdates) (config.
 	}
 	if updates.TagExtractorSkipIfHasYAML != nil {
 		saved.TagExtractor.SkipIfHasYAML = *updates.TagExtractorSkipIfHasYAML
+	}
+	if updates.Provider != nil && updates.TagExtractorProvider == nil {
+		saved.TagExtractor.Provider = saved.Provider
+		if updates.TagExtractorModel == nil {
+			saved.TagExtractor.Model = defaultTagExtractorModel(saved.TagExtractor.Provider)
+		}
+	}
+	if updates.TagExtractorProvider != nil && updates.TagExtractorModel == nil {
+		saved.TagExtractor.Model = defaultTagExtractorModel(saved.TagExtractor.Provider)
 	}
 	return saved.Settings()
 }
@@ -792,6 +834,15 @@ func supportedModels(provider string) []string {
 	}
 }
 
+func supportedTagExtractorModels(provider string) []string {
+	switch supportedProvider(provider) {
+	case config.OpenAIProviderName:
+		return []string{config.OpenAITagExtractorDefaultModel}
+	default:
+		return []string{config.OllamaTagExtractorDefaultModel}
+	}
+}
+
 func buildModelOptions(provider, current string) (options []string, defaultValue string) {
 	standard := supportedModels(provider)
 	options = append(options, standard...)
@@ -827,6 +878,51 @@ func isStandardModelForOtherProvider(provider, model string) bool {
 
 func isStandardModel(provider, model string) bool {
 	return containsString(supportedModels(provider), strings.TrimSpace(model))
+}
+
+func buildTagExtractorModelOptions(provider, current string) (options []string, defaultValue string) {
+	standard := supportedTagExtractorModels(provider)
+	options = append(options, standard...)
+	current = strings.TrimSpace(current)
+	if current != "" && !containsString(standard, current) && !isStandardTagExtractorModelForOtherProvider(provider, current) {
+		options = append(options, current)
+		defaultValue = current
+	}
+	options = append(options, CustomModelOptionLabel)
+	if defaultValue == "" {
+		if containsString(standard, current) {
+			defaultValue = current
+		} else if len(standard) > 0 {
+			defaultValue = standard[0]
+		} else {
+			defaultValue = current
+		}
+	}
+	return options, defaultValue
+}
+
+func isStandardTagExtractorModelForOtherProvider(provider, model string) bool {
+	for _, p := range supportedProviders() {
+		if p == provider {
+			continue
+		}
+		if containsString(supportedTagExtractorModels(p), model) {
+			return true
+		}
+	}
+	return false
+}
+
+func isStandardTagExtractorModel(provider, model string) bool {
+	return containsString(supportedTagExtractorModels(provider), strings.TrimSpace(model))
+}
+
+func defaultTagExtractorModel(provider string) string {
+	models := supportedTagExtractorModels(provider)
+	if len(models) == 0 {
+		return ""
+	}
+	return models[0]
 }
 
 func supportedImageProviders() []string {

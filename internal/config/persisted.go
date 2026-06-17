@@ -443,6 +443,12 @@ func applyProviderDefaults(settings *Settings) {
 		if settings.VectorDim == DefaultVectorDim {
 			settings.VectorDim = OpenAIDefaultDim
 		}
+		if strings.TrimSpace(settings.TagExtractor.Provider) == DefaultProviderName {
+			settings.TagExtractor.Provider = OpenAIProviderName
+			if strings.TrimSpace(settings.TagExtractor.Model) == "" || strings.TrimSpace(settings.TagExtractor.Model) == OllamaTagExtractorDefaultModel {
+				settings.TagExtractor.Model = OpenAITagExtractorDefaultModel
+			}
+		}
 	}
 	if strings.TrimSpace(settings.Image.Provider) == OpenAIProviderName {
 		if strings.TrimSpace(settings.Image.Model) == "" || settings.Image.Model == "ViT-B-32" {

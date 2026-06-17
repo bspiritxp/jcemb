@@ -212,6 +212,26 @@ func TestLoadFromPathBackfillsTagExtractorDefaultsForOldConfig(t *testing.T) {
 	require.Equal(t, 30*time.Second, loaded.Settings.TagExtractor.Timeout)
 }
 
+func TestLoadFromPathDefaultsTagExtractorToOpenAIWhenProviderIsOpenAI(t *testing.T) {
+	clearConfigEnv(t)
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	require.NoError(t, os.WriteFile(configPath, []byte(`{
+		"data_dir": "`+filepath.ToSlash(t.TempDir())+`",
+		"provider": "openai",
+		"openai": {
+			"api_key": "sk-test"
+		}
+	}`), 0o644))
+
+	loaded, err := LoadFromPath(configPath)
+
+	require.NoError(t, err)
+	require.Equal(t, OpenAIProviderName, loaded.Settings.Provider)
+	require.Equal(t, OpenAIDefaultModel, loaded.Settings.Model)
+	require.Equal(t, OpenAIProviderName, loaded.Settings.TagExtractor.Provider)
+	require.Equal(t, OpenAITagExtractorDefaultModel, loaded.Settings.TagExtractor.Model)
+}
+
 func TestPersistedConfigSettingsKeepsExplicitDisabledTagExtractor(t *testing.T) {
 	clearConfigEnv(t)
 

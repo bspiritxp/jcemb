@@ -125,6 +125,7 @@ type pipelineState struct {
 	snapshot        index.Snapshot
 	hasSnapshot     bool
 	rebuildRequired bool
+	reconcile       bool
 	store           domain.VectorStore
 	storeConfig     domain.StoreConfig
 	states          map[string]domain.FileState
@@ -251,10 +252,11 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 		return Result{}, err
 	}
 
-	rootDir, err := resolveRootDir(normalized.Path)
+	scanRoot, err := resolveScanRoot(normalized.Path)
 	if err != nil {
 		return Result{}, err
 	}
+	rootDir := scanRoot.RootDir
 
 	result := Result{RootDir: rootDir}
 
@@ -300,7 +302,7 @@ func (s *Service) Run(ctx context.Context, request Request) (Result, error) {
 		if result.Recipe.Type == "" {
 			result.Recipe = recipe
 		}
-		state, err := s.preparePipelineState(rootDir, normalized, recipe, fileType)
+		state, err := s.preparePipelineState(scanRoot, normalized, recipe, fileType)
 		if err != nil {
 			return result, err
 		}
@@ -406,7 +408,8 @@ func normalizeRequestedExtensions(values []string) []string {
 	return out
 }
 
-func (s *Service) preparePipelineState(rootDir string, request Request, recipe domain.EmbedRecipe, fileType string) (*pipelineState, error) {
+func (s *Service) preparePipelineState(scanRoot jcpaths.CollectionRoot, request Request, recipe domain.EmbedRecipe, fileType string) (*pipelineState, error) {
+	rootDir := scanRoot.RootDir
 	rootIdentity := jcpaths.NormalizeStoredPath(rootDir)
 	collectionID := index.CollectionIDForRootAndFileType(rootIdentity, fileType)
 	storageRoot := jcpaths.CollectionStorageDir(request.DataDir, collectionID)
@@ -415,6 +418,7 @@ func (s *Service) preparePipelineState(rootDir string, request Request, recipe d
 		storageRoot: storageRoot,
 		request:     request,
 		recipe:      recipe,
+		reconcile:   scanRoot.IsDir && jcpaths.NormalizeStoredPath(scanRoot.InputPath) == rootIdentity,
 		states:      map[string]domain.FileState{},
 		storeConfig: domain.StoreConfig{
 			CollectionID:    collectionID,
@@ -455,6 +459,9 @@ func (s *Service) preparePipelineState(rootDir string, request Request, recipe d
 	case errors.Is(err, index.ErrStateNotFound):
 		return state, nil
 	case errors.Is(err, index.ErrRebuildRequired):
+		if err := state.ensureCanRebuildCollection(); err != nil {
+			return nil, err
+		}
 		state.rebuildRequired = true
 	default:
 		return nil, err
@@ -462,6 +469,9 @@ func (s *Service) preparePipelineState(rootDir string, request Request, recipe d
 
 	if state.hasSnapshot && !state.rebuildRequired {
 		if _, rebuild := index.ConfigNeedsRebuild(snapshot.Config, state.storeConfig); rebuild {
+			if err := state.ensureCanRebuildCollection(); err != nil {
+				return nil, err
+			}
 			state.rebuildRequired = true
 		}
 	}
@@ -477,6 +487,13 @@ func (s *Service) preparePipelineState(rootDir string, request Request, recipe d
 		state.storeConfig.VectorDim = 0
 	}
 	return state, nil
+}
+
+func (s *pipelineState) ensureCanRebuildCollection() error {
+	if s.reconcile {
+		return nil
+	}
+	return fmt.Errorf("scan: collection rebuild requires scanning the collection root %s", s.rootDir)
 }
 
 func (s *Service) buildJobs(files []internalfs.File, request Request, state *pipelineState) ([]fileJob, map[string]struct{}) {
@@ -559,7 +576,9 @@ func (s *Service) processJobs(ctx context.Context, result Result, jobs []fileJob
 		}
 	}
 
-	s.reconcileMissingFiles(ctx, &result, state, seen)
+	if state.reconcile {
+		s.reconcileMissingFiles(ctx, &result, state, seen)
+	}
 	if state.dirty {
 		files := make([]domain.FileState, 0, len(state.states))
 		for _, fileState := range state.states {
@@ -728,11 +747,19 @@ func (s *Service) ensureStore(ctx context.Context, state *pipelineState, vectorD
 }
 
 func resolveRootDir(inputPath string) (string, error) {
-	resolved, err := jcpaths.ResolveCollectionRoot(inputPath)
+	resolved, err := resolveScanRoot(inputPath)
 	if err != nil {
-		return "", fmt.Errorf("scan: resolve path: %w", err)
+		return "", err
 	}
 	return resolved.RootDir, nil
+}
+
+func resolveScanRoot(inputPath string) (jcpaths.CollectionRoot, error) {
+	resolved, err := jcpaths.ResolveCollectionRoot(inputPath)
+	if err != nil {
+		return jcpaths.CollectionRoot{}, fmt.Errorf("scan: resolve path: %w", err)
+	}
+	return resolved, nil
 }
 
 func cloneStringMap(values map[string]string) map[string]string {

@@ -169,6 +169,102 @@ func TestServiceRunReconcilesDeletedFiles(t *testing.T) {
 	require.Equal(t, filepath.ToSlash(filepath.Join(rootDir, "docs", "a.md")), results[0].Chunk.Metadata.RelPath)
 }
 
+func TestServiceRunSingleFileScanDoesNotReconcileUnseenCollectionFiles(t *testing.T) {
+	t.Parallel()
+
+	rootDir := writeDocs(t, map[string]string{
+		"docs/a.md": "# Alpha\n\nAlpha body.",
+		"docs/b.md": "# Beta\n\nBeta body.",
+	})
+	docsDir := filepath.Join(rootDir, "docs")
+	service := newTestService(t, newFakeProvider(nil))
+
+	_, err := service.Run(context.Background(), Request{
+		Path:        docsDir,
+		Type:        "md",
+		Concurrency: 2,
+		Provider:    ollama.Name,
+		Model:       ollama.DefaultModel,
+		Recursive:   true,
+	})
+	require.NoError(t, err)
+
+	result, err := service.Run(context.Background(), Request{
+		Path:        filepath.Join(docsDir, "a.md"),
+		Type:        "md",
+		Concurrency: 1,
+		Provider:    ollama.Name,
+		Model:       ollama.DefaultModel,
+		Recursive:   true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, Summary{Processed: 1, Skipped: 1}, result.Summary)
+	require.Empty(t, result.Deleted)
+
+	snapshot, loadErr := loadSnapshotForTest(docsDir, service.deps.ResolveAppPaths)
+	require.NoError(t, loadErr)
+	require.Len(t, snapshot.Files, 2)
+}
+
+func TestServiceRunSingleFileScanRejectsCollectionRebuild(t *testing.T) {
+	t.Parallel()
+
+	rootDir := writeDocs(t, map[string]string{
+		"docs/a.md": "# Alpha\n\nAlpha body.",
+		"docs/b.md": "# Beta\n\nBeta body.",
+	})
+	docsDir := filepath.Join(rootDir, "docs")
+	service := newTestService(t, newFakeProvider(nil))
+
+	_, err := service.Run(context.Background(), Request{
+		Path:        docsDir,
+		Type:        "md",
+		Concurrency: 2,
+		Provider:    ollama.Name,
+		Model:       ollama.DefaultModel,
+		Recursive:   true,
+	})
+	require.NoError(t, err)
+
+	_, err = service.Run(context.Background(), Request{
+		Path:        filepath.Join(docsDir, "a.md"),
+		Type:        "md",
+		Concurrency: 1,
+		Provider:    ollama.Name,
+		Model:       "custom-model",
+		Recursive:   true,
+	})
+	require.ErrorContains(t, err, "scan: collection rebuild requires scanning the collection root")
+
+	snapshot, loadErr := loadSnapshotForTest(docsDir, service.deps.ResolveAppPaths)
+	require.NoError(t, loadErr)
+	require.Equal(t, ollama.DefaultModel, snapshot.Config.Model)
+	require.Len(t, snapshot.Files, 2)
+}
+
+func TestServiceRunSingleFileScanRejectsLoaderRequestedRebuild(t *testing.T) {
+	t.Parallel()
+
+	rootDir := writeDocs(t, map[string]string{
+		"docs/a.md": "# Alpha\n\nAlpha body.",
+	})
+	docsDir := filepath.Join(rootDir, "docs")
+	service := newTestService(t, newFakeProvider(nil))
+	service.deps.LoadIndex = func(string) (index.Snapshot, error) {
+		return index.Snapshot{}, index.ErrRebuildRequired
+	}
+
+	_, err := service.Run(context.Background(), Request{
+		Path:        filepath.Join(docsDir, "a.md"),
+		Type:        "md",
+		Concurrency: 1,
+		Provider:    ollama.Name,
+		Model:       ollama.DefaultModel,
+		Recursive:   true,
+	})
+	require.ErrorContains(t, err, "scan: collection rebuild requires scanning the collection root")
+}
+
 func TestServiceRunReturnsNonZeroErrorWhenSingleFileFails(t *testing.T) {
 	t.Parallel()
 
