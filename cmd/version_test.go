@@ -16,7 +16,7 @@ func TestVersionCommandPrintsVersion(t *testing.T) {
 
 	err := cmd.Execute()
 	require.NoError(t, err)
-	require.Equal(t, "0.2.0\n", buf.String())
+	require.Equal(t, "1.0.0\n", buf.String())
 }
 
 func TestVersionCommandCanBeOverriddenAtBuildTime(t *testing.T) {

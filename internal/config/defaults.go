@@ -19,6 +19,9 @@ const (
 	OpenAIDefaultModel  = "text-embedding-3-small"
 	OpenAIDefaultDim    = 1536
 
+	OllamaTagExtractorDefaultModel = "qwen2.5:7b"
+	OpenAITagExtractorDefaultModel = "gpt-5.4-nano"
+
 	envDataDir              = "JCEMB_DATA_DIR"
 	envProvider             = "JCEMB_PROVIDER"
 	envModel                = "JCEMB_MODEL"
@@ -196,7 +199,7 @@ func builtInSettings(dataRoot string) Settings {
 		TagExtractor: TagExtractorConfig{
 			Enabled:       true,
 			Provider:      DefaultProviderName,
-			Model:         "qwen2.5:7b",
+			Model:         OllamaTagExtractorDefaultModel,
 			MaxTags:       domain.DefaultTagExtractorMaxTags,
 			MinTagLen:     domain.DefaultTagExtractorMinTagLen,
 			MaxTagLen:     domain.DefaultTagExtractorMaxTagLen,

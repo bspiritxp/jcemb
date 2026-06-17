@@ -106,16 +106,22 @@ func TestRunConfigCommandPersistsInteractiveSelections(t *testing.T) {
 				require.Equal(t, defaultOllamaModelOptions, request.Options)
 				return config.DefaultModelName, nil
 			case 3:
+				require.Equal(t, "Tag extraction model", request.Label)
+				return config.OllamaTagExtractorDefaultModel, nil
+			case 4:
 				require.Equal(t, "Image provider", request.Label)
 				return "openclip", nil
-			default:
+			case 5:
 				require.Equal(t, "Image model", request.Label)
 				return "ViT-B-32", nil
+			default:
+				t.Fatalf("unexpected select call %d for %s", selectCalls, request.Label)
+				return "", nil
 			}
 		},
 	})
 	require.NoError(t, err)
-	require.Equal(t, 4, selectCalls)
+	require.Equal(t, 5, selectCalls)
 
 	homeDir, homeErr := os.UserHomeDir()
 	require.NoError(t, homeErr)
@@ -166,7 +172,8 @@ func TestRunConfigCommandSupportsOpenAIProvider(t *testing.T) {
 				Timeout:    60 * time.Second,
 				Dimensions: 1536,
 			},
-			Image: defaultImageSettings(),
+			Image:        defaultImageSettings(),
+			TagExtractor: defaultConfigSettings(t).TagExtractor,
 		},
 		Save: func(cfg config.PersistedConfig) error {
 			saved = cfg
@@ -203,9 +210,21 @@ func TestRunConfigCommandSupportsOpenAIProvider(t *testing.T) {
 	}
 	require.Equal(t, []string{config.OpenAIDefaultModel, CustomModelOptionLabel}, modelPrompt.Options)
 
+	var tagModelPrompt ConfigSelectRequest
+	for _, p := range prompts {
+		if p.Label == "Tag extraction model" {
+			tagModelPrompt = p
+		}
+	}
+	require.Equal(t, []string{config.OpenAITagExtractorDefaultModel, CustomModelOptionLabel}, tagModelPrompt.Options)
+	require.Equal(t, config.OpenAITagExtractorDefaultModel, tagModelPrompt.DefaultValue)
+	require.Equal(t, config.OpenAIProviderName, saved.TagExtractor.Provider)
+	require.Equal(t, config.OpenAITagExtractorDefaultModel, saved.TagExtractor.Model)
+
 	require.Contains(t, output.String(), "OpenAI provider settings:")
 	require.Contains(t, output.String(), "OpenAI base URL")
 	require.Contains(t, output.String(), "OpenAI API key")
+	require.Contains(t, output.String(), "Tag extraction:")
 }
 
 func TestRunConfigCommandShowsJSONWithoutTTY(t *testing.T) {
@@ -266,6 +285,35 @@ func TestRunConfigCommandAppliesNonInteractiveUpdate(t *testing.T) {
 	require.Equal(t, 5, saved.TagExtractor.MaxTags)
 	require.Contains(t, output.String(), "provider: openai")
 	require.Contains(t, output.String(), "tag_extractor.enabled: false")
+}
+
+func TestRunConfigCommandSyncsTagExtractorDefaultsWhenProviderChanges(t *testing.T) {
+	var saved config.PersistedConfig
+	output := &bytes.Buffer{}
+	provider := config.OpenAIProviderName
+	apiKey := "sk-test"
+
+	_, err := RunConfigCommand(ConfigCommandRequest{
+		In:         bytes.NewBufferString(""),
+		Out:        output,
+		ConfigPath: filepath.Join(t.TempDir(), "jcemb.json"),
+		Settings:   defaultConfigSettings(t),
+		Updates: ConfigUpdates{
+			Provider:     &provider,
+			OpenAIAPIKey: &apiKey,
+		},
+		Save: func(cfg config.PersistedConfig) error {
+			saved = cfg
+			return nil
+		},
+		IsTerminal: func(io.Reader) bool { return false },
+	})
+	require.NoError(t, err)
+	require.Equal(t, config.OpenAIProviderName, saved.Provider)
+	require.Equal(t, config.OpenAIProviderName, saved.TagExtractor.Provider)
+	require.Equal(t, config.OpenAITagExtractorDefaultModel, saved.TagExtractor.Model)
+	require.Contains(t, output.String(), "tag_extractor.provider: openai")
+	require.Contains(t, output.String(), "tag_extractor.model: "+config.OpenAITagExtractorDefaultModel)
 }
 
 func TestRunConfigCommandShowIncludesTagExtractorBlock(t *testing.T) {
@@ -369,19 +417,22 @@ func TestRunConfigCommandUsesSelectorDefaultsForProviderAndModel(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.Len(t, prompts, 4)
+	require.Len(t, prompts, 5)
 	require.Equal(t, "Provider", prompts[0].Label)
 	require.Equal(t, []string{config.DefaultProviderName, config.OpenAIProviderName}, prompts[0].Options)
 	require.Equal(t, config.DefaultProviderName, prompts[0].DefaultValue)
 	require.Equal(t, "Model", prompts[1].Label)
 	require.Equal(t, defaultOllamaModelOptions, prompts[1].Options)
 	require.Equal(t, config.DefaultModelName, prompts[1].DefaultValue)
-	require.Equal(t, "Image provider", prompts[2].Label)
-	require.Equal(t, []string{"openclip", "jina-clip", "openai", CustomImageProviderOptionLabel}, prompts[2].Options)
-	require.Equal(t, "openclip", prompts[2].DefaultValue)
-	require.Equal(t, "Image model", prompts[3].Label)
-	require.Equal(t, []string{"ViT-B-32", "ViT-L-14", CustomModelOptionLabel}, prompts[3].Options)
-	require.Equal(t, "ViT-B-32", prompts[3].DefaultValue)
+	require.Equal(t, "Tag extraction model", prompts[2].Label)
+	require.Equal(t, []string{config.OllamaTagExtractorDefaultModel, CustomModelOptionLabel}, prompts[2].Options)
+	require.Equal(t, config.OllamaTagExtractorDefaultModel, prompts[2].DefaultValue)
+	require.Equal(t, "Image provider", prompts[3].Label)
+	require.Equal(t, []string{"openclip", "jina-clip", "openai", CustomImageProviderOptionLabel}, prompts[3].Options)
+	require.Equal(t, "openclip", prompts[3].DefaultValue)
+	require.Equal(t, "Image model", prompts[4].Label)
+	require.Equal(t, []string{"ViT-B-32", "ViT-L-14", CustomModelOptionLabel}, prompts[4].Options)
+	require.Equal(t, "ViT-B-32", prompts[4].DefaultValue)
 }
 
 func TestRunConfigCommandPreservesExistingCustomModel(t *testing.T) {
@@ -563,13 +614,13 @@ func TestRunConfigCommandPromptsImageProviderAndModelLists(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.Len(t, prompts, 4)
-	require.Equal(t, "Image provider", prompts[2].Label)
-	require.Equal(t, []string{"openclip", "jina-clip", "openai", CustomImageProviderOptionLabel}, prompts[2].Options)
-	require.Equal(t, "jina-clip", prompts[2].DefaultValue)
-	require.Equal(t, "Image model", prompts[3].Label)
-	require.Equal(t, []string{"jinaai/jina-clip-v2", CustomModelOptionLabel}, prompts[3].Options)
-	require.Equal(t, "jinaai/jina-clip-v2", prompts[3].DefaultValue)
+	require.Len(t, prompts, 5)
+	require.Equal(t, "Image provider", prompts[3].Label)
+	require.Equal(t, []string{"openclip", "jina-clip", "openai", CustomImageProviderOptionLabel}, prompts[3].Options)
+	require.Equal(t, "jina-clip", prompts[3].DefaultValue)
+	require.Equal(t, "Image model", prompts[4].Label)
+	require.Equal(t, []string{"jinaai/jina-clip-v2", CustomModelOptionLabel}, prompts[4].Options)
+	require.Equal(t, "jinaai/jina-clip-v2", prompts[4].DefaultValue)
 }
 
 func TestRunConfigCommandPersistsCustomImageDimensionsAndVisionModel(t *testing.T) {
